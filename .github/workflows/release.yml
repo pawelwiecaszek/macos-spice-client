@@ -24,10 +24,19 @@ env:
 
 jobs:
   release:
-    # Override with the repository variable MACOS_RUNNER (e.g. xcode-27) if needed.
+    # Override with the repository variable MACOS_RUNNER (a GitHub-hosted label such as
+    # macos-26-xlarge) if needed; self-hosted runners are rejected by the first step.
     runs-on: ${{ vars.MACOS_RUNNER || 'macos-26' }}
     timeout-minutes: 60
     steps:
+      # Only GitHub-hosted runners: a self-hosted runner picked via MACOS_RUNNER would run
+      # untrusted code (pull requests) on a persistent machine.
+      - name: Require a GitHub-hosted runner
+        if: runner.environment != 'github-hosted'
+        run: |
+          echo "::error::This workflow must run on a GitHub-hosted runner (got '${{ runner.environment }}')"
+          exit 1
+
       # Plain git instead of actions/checkout: the account only allows its own actions.
       - name: Check out
         env:
@@ -134,6 +143,21 @@ jobs:
             [ "$PRERELEASE" = true ] && flags+=(--prerelease)
             gh release create "$GITHUB_REF_NAME" "$DMG" "$DMG.sha256" \
               --verify-tag --title "$APP_NAME $VERSION" --generate-notes "${flags[@]}"
+          fi
+
+      # The cask must only ever point at bytes that are actually downloadable.
+      - name: Verify published checksum
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA256: ${{ steps.dmg.outputs.sha256 }}
+          DMG: ${{ steps.dmg.outputs.path }}
+        run: |
+          dl=$(mktemp -d)
+          gh release download "$GITHUB_REF_NAME" --pattern "$(basename "$DMG")" --dir "$dl"
+          published=$(shasum -a 256 "$dl/$(basename "$DMG")" | cut -d' ' -f1)
+          if [ "$published" != "$SHA256" ]; then
+            echo "::error::Published DMG checksum $published differs from built $SHA256"
+            exit 1
           fi
 
       - name: Update Homebrew cask

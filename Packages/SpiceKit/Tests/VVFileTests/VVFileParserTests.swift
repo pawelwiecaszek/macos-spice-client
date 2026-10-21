@@ -191,6 +191,30 @@ struct VVFileParserTests {
             _ = try? VVFileParser.parse(bytes)
         }
     }
+
+    /// Audit: the plaintext warning must also cover partially encrypted sessions.
+    @Test func plaintextExposure() {
+        var profile = ConnectionProfile(host: "h")
+        profile.port = 5900
+        #expect(profile.plaintextExposure == .unencrypted)
+        profile.secureChannels = .all
+        #expect(profile.plaintextExposure == .encrypted)  // refused, never downgraded
+
+        profile.tlsPort = 5901
+        profile.secureChannels = .unspecified
+        #expect(profile.plaintextExposure == .encrypted)
+        profile.secureChannels = .some([.main, .inputs])
+        guard case .partial(let plain) = profile.plaintextExposure else {
+            Issue.record("expected partial exposure"); return
+        }
+        #expect(plain.contains(.display) && !plain.contains(.main) && !plain.contains(.inputs))
+        profile.secureChannels = .some(Set(ChannelName.allCases))
+        #expect(profile.plaintextExposure == .encrypted)
+
+        profile.port = nil
+        profile.secureChannels = .some([.main])
+        #expect(profile.plaintextExposure == .encrypted)
+    }
 }
 
 // Expose private helpers for testing without widening their access level in the module.

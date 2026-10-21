@@ -21,11 +21,13 @@ cask "macos-spice-client" do
 
   app "MacOS Spice Client.app"
 
-  # The app is ad-hoc signed, not notarized: drop the download quarantine so Gatekeeper
-  # doesn't refuse to open it.
-  postflight_steps do
-    run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{appdir}}/MacOS Spice Client.app"]
-  end
+  # The app is ad-hoc signed and not notarized. The download quarantine is deliberately
+  # kept, so Gatekeeper still asks before the first launch (System Settings › Privacy &
+  # Security › Open Anyway).
+  caveats <<~EOS
+    #{token} is ad-hoc signed and not notarized by Apple. On first launch macOS blocks it:
+    open System Settings › Privacy & Security and click "Open Anyway".
+  EOS
 
   zap trash: [
     "~/Library/Application Scripts/com.pawelwiecaszek.spiceclient",

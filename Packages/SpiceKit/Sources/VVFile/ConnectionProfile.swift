@@ -91,3 +91,37 @@ extension ConnectionProfile: CustomStringConvertible {
             + "ticket: \(password != nil))"
     }
 }
+
+// MARK: - Transport exposure
+
+/// How much of a session can travel without TLS. Mirrors `SpiceEndpoint.route(for:)`, so
+/// keep the two in sync.
+public enum PlaintextExposure: Sendable, Hashable {
+    /// Every channel uses TLS (or is refused rather than downgraded).
+    case encrypted
+    /// Both ports are offered, but `secure-channels` lists only some channels: the others
+    /// (`channels`, e.g. display or inputs) use the plain port.
+    case partial(channels: Set<ChannelName>)
+    /// No TLS port: nothing is encrypted or authenticated.
+    case unencrypted
+}
+
+extension ConnectionProfile {
+    /// Which channels may be opened over plain TCP with this profile.
+    public var plaintextExposure: PlaintextExposure {
+        switch (port, tlsPort) {
+        case (nil, _):
+            return .encrypted
+        case (_?, nil):
+            // Channels named in `secure-channels` are refused; every other one is plain.
+            if case .all = secureChannels { return .encrypted }
+            return .unencrypted
+        case (_?, _?):
+            guard case .some(let secured) = secureChannels else { return .encrypted }
+            let plain = Set(ChannelName.allCases).subtracting(secured)
+            // `tunnel` has no `.vv` name, so a list naming every channel still isn't
+            // proof of full coverage; it's obsolete and never opened by this client.
+            return plain.isEmpty ? .encrypted : .partial(channels: plain)
+        }
+    }
+}

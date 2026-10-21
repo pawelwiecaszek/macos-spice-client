@@ -145,17 +145,31 @@ final class SessionWindowManager: NSObject, NSWindowDelegate {
 
     /// Without TLS nothing is protected: the screen, keystrokes and clipboard travel in the
     /// clear, and the server's ticket-encryption key isn't authenticated, so anyone on the
-    /// path could impersonate the server. Ask before every such connection (reconnects in
-    /// the same window don't ask again).
+    /// path could impersonate the server. Ask before every connection that would send any
+    /// channel in the clear, including partially encrypted sessions where `secure-channels`
+    /// covers only some channels (reconnects in the same window don't ask again).
     private func confirmUnencrypted(_ profile: ConnectionProfile) -> Bool {
-        guard profile.tlsPort == nil else { return true }
         let alert = NSAlert()
-        alert.messageText = String(localized: "Connect without encryption?")
-        alert.informativeText = String(localized: """
-            “\(profile.displayTitle)” offers no TLS port, so this connection isn’t encrypted or \
-            authenticated. Anyone on the network path can see the screen and your keystrokes, \
-            and could pretend to be the server. Only continue on a network you trust.
-            """)
+        switch profile.plaintextExposure {
+        case .encrypted:
+            return true
+        case .unencrypted:
+            alert.messageText = String(localized: "Connect without encryption?")
+            alert.informativeText = String(localized: """
+                “\(profile.displayTitle)” offers no TLS port, so this connection isn’t encrypted or \
+                authenticated. Anyone on the network path can see the screen and your keystrokes, \
+                and could pretend to be the server. Only continue on a network you trust.
+                """)
+        case .partial(let channels):
+            let names = channels.map(\.rawValue).sorted().formatted(.list(type: .and))
+            alert.messageText = String(localized: "Connect with partial encryption?")
+            alert.informativeText = String(localized: """
+                “\(profile.displayTitle)” encrypts only some channels. These would travel \
+                unencrypted: \(names). Anyone on the network path could see or alter that \
+                traffic, which may include the screen, your keystrokes or the clipboard. Only \
+                continue on a network you trust.
+                """)
+        }
         alert.alertStyle = .warning
         alert.addButton(withTitle: String(localized: "Cancel"))
         alert.addButton(withTitle: String(localized: "Connect Anyway"))

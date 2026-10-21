@@ -77,9 +77,9 @@ The app is ad-hoc signed and not notarized by Apple. Each release lists the DMG'
 checksum (`.sha256` file) so you can verify the download.
 
 The first time you open a downloaded copy, macOS blocks
-it: open **System Settings › Privacy & Security** and click **Open Anyway** (or run
-`xattr -dr com.apple.quarantine "/Applications/MacOS Spice Client.app"`). The Homebrew
-cask verifies the checksum and then does this for you.
+it: verify the checksum, then open **System Settings › Privacy & Security** and click
+**Open Anyway**. The Homebrew cask verifies the checksum but leaves Gatekeeper's quarantine
+in place, so the same one-time approval applies.
 
 ### Build from source
 

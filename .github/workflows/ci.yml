@@ -20,6 +20,14 @@ jobs:
     runs-on: ${{ vars.MACOS_RUNNER || 'macos-26' }}
     timeout-minutes: 45
     steps:
+      # Only GitHub-hosted runners: a self-hosted runner picked via MACOS_RUNNER would run
+      # untrusted code (pull requests) on a persistent machine.
+      - name: Require a GitHub-hosted runner
+        if: runner.environment != 'github-hosted'
+        run: |
+          echo "::error::This workflow must run on a GitHub-hosted runner (got '${{ runner.environment }}')"
+          exit 1
+
       # Plain git instead of actions/checkout: the account only allows its own actions.
       - name: Check out
         env:
