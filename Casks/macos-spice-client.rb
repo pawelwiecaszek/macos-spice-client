@@ -5,8 +5,7 @@
 #   brew install --cask macos-spice-client
 cask "macos-spice-client" do
   version "0.1.0"
-  # Placeholder until the first release: installs fail rather than skip verification.
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "6cbbf57cdaaa62cce9704b4bfdbc6a586b1ed8253e970ddca88e9e3b974c978b"
 
   url "https://github.com/pawelwiecaszek/macos-spice-client/releases/download/#{version}/MacOS-Spice-Client-#{version}.dmg"
   name "MacOS Spice Client"
