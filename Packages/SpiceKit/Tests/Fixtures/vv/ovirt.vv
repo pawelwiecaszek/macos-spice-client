@@ -1,0 +1,13 @@
+[virt-viewer]
+type=spice
+host=192.0.2.10
+port=-1
+tls-port=5901
+password=placeholder
+secure-channels=all
+release-cursor=<Shift><F12>
+
+[ovirt]
+host=engine.example.invalid:443
+vm-guid=00000000-0000-0000-0000-000000000000
+jsessionid=placeholder

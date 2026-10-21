@@ -1,0 +1,156 @@
+# Builds, tests and publishes a release when a version tag (e.g. 0.1.0) is pushed:
+#   git tag 0.1.0 && git push origin 0.1.0
+# Produces a universal (Apple silicon + Intel), ad-hoc signed app in a DMG, attaches it to a
+# GitHub release and points the Homebrew cask in Casks/ at it.
+# A tag with a suffix (0.2.0-beta.1) becomes a pre-release and leaves the cask alone.
+name: Release
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+      - "[0-9]+.[0-9]+.[0-9]+-*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  APP_NAME: MacOS Spice Client
+  DMG_PREFIX: MacOS-Spice-Client
+
+jobs:
+  release:
+    # Override with the repository variable MACOS_RUNNER (e.g. xcode-27) if needed.
+    runs-on: ${{ vars.MACOS_RUNNER || 'macos-26' }}
+    timeout-minutes: 60
+    steps:
+      # Plain git instead of actions/checkout: the account only allows its own actions.
+      - name: Check out
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          git init -q .
+          git config http.https://github.com/.extraheader \
+            "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
+          git remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          git fetch -q --depth=1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+
+      - name: Version from tag
+        id: version
+        run: |
+          version="$GITHUB_REF_NAME"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::Tag '$version' is not a version like 0.1.0 or 0.2.0-beta.1"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$version" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Select Xcode
+        run: |
+          if [ -n "${{ vars.XCODE_PATH }}" ]; then sudo xcode-select -s "${{ vars.XCODE_PATH }}"; fi
+          xcodebuild -version
+          # Xcode 26+ ships the Metal compiler as a separate component.
+          xcodebuild -downloadComponent MetalToolchain || true
+
+      - name: Test SpiceKit
+        working-directory: Packages/SpiceKit
+        run: swift test
+
+      - name: Build app
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -o pipefail
+          mkdir -p build
+          xcodebuild -project SpiceClient.xcodeproj -scheme SpiceClient -configuration Release \
+            -destination 'generic/platform=macOS' -derivedDataPath build/DerivedData \
+            ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO \
+            MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
+            CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= \
+            build 2>&1 | tee build/xcodebuild.log
+          if grep -E '\.swift:[0-9]+:[0-9]+: warning' build/xcodebuild.log; then
+            echo "::error::Swift warnings found"
+            exit 1
+          fi
+
+      - name: Check signature and entitlements
+        run: |
+          app="build/DerivedData/Build/Products/Release/$APP_NAME.app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -d --entitlements - "$app" | tee build/entitlements.txt
+          if grep -q get-task-allow build/entitlements.txt; then
+            echo "::error::Release build must not allow debugger attachment (get-task-allow)"
+            exit 1
+          fi
+          lipo -archs "$app/Contents/MacOS/$APP_NAME"
+
+      - name: Make DMG
+        id: dmg
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          app="build/DerivedData/Build/Products/Release/$APP_NAME.app"
+          stage="build/dmg"
+          rm -rf "$stage" && mkdir -p "$stage"
+          ditto "$app" "$stage/$APP_NAME.app"
+          ln -s /Applications "$stage/Applications"
+          dmg="build/$DMG_PREFIX-$VERSION.dmg"
+          # hdiutil occasionally fails with "Resource busy" on CI machines: retry.
+          for attempt in 1 2 3 4 5; do
+            if hdiutil create -volname "$APP_NAME" -srcfolder "$stage" -fs HFS+ -format UDZO -ov "$dmg"; then
+              break
+            fi
+            [ "$attempt" = 5 ] && exit 1
+            sleep 5
+          done
+          sha=$(shasum -a 256 "$dmg" | cut -d' ' -f1)
+          echo "$sha  $(basename "$dmg")" > "$dmg.sha256"
+          echo "path=$dmg" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+          DMG: ${{ steps.dmg.outputs.path }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            # Re-run for an existing release (e.g. the tag was moved): replace the files,
+            # keep the title and notes that may have been edited by hand.
+            gh release upload "$GITHUB_REF_NAME" "$DMG" "$DMG.sha256" --clobber
+          else
+            flags=()
+            [ "$PRERELEASE" = true ] && flags+=(--prerelease)
+            gh release create "$GITHUB_REF_NAME" "$DMG" "$DMG.sha256" \
+              --verify-tag --title "$APP_NAME $VERSION" --generate-notes "${flags[@]}"
+          fi
+
+      - name: Update Homebrew cask
+        if: steps.version.outputs.prerelease == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA256: ${{ steps.dmg.outputs.sha256 }}
+        run: |
+          git fetch --depth=1 origin main
+          git checkout -B main FETCH_HEAD
+          cask=Casks/macos-spice-client.rb
+          sed -i '' -E -e "s/^  version \".*\"/  version \"$VERSION\"/" -e "s/^  sha256 .*/  sha256 \"$SHA256\"/" \
+            -e "/^  # Placeholder until the first release/d" "$cask"
+          grep -q "sha256 \"$SHA256\"" "$cask"
+          git diff --stat
+          if git diff --quiet; then exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore(cask): update to $VERSION"
+          git push origin main

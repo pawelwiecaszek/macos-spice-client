@@ -1,0 +1,16 @@
+﻿[virt-viewer]
+type=spice
+host=example.invalid
+port=5900
+tls-port=5901
+; comment
+
+title=first
+title=second
+future-key=whatever
+enable-usbredir=1
+enable-usb-autoshare=1
+usb-filter=0x03,-1,-1,-1,0|-1,0x0781,-1,-1,1|-1,-1,-1,-1,0
+color-depth=24
+disable-effects=wallpaper;font-smooth
+versions=rhev-win64:2.0-160;rhev-win32:2.0-160

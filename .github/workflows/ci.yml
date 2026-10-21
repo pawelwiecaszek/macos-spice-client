@@ -1,0 +1,56 @@
+# Package tests and an app build (failing on Swift warnings) for every push and pull request.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "Casks/**", "docs/**"]
+  pull_request:
+    paths-ignore: ["**.md", "Casks/**", "docs/**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ${{ vars.MACOS_RUNNER || 'macos-26' }}
+    timeout-minutes: 45
+    steps:
+      # Plain git instead of actions/checkout: the account only allows its own actions.
+      - name: Check out
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          git init -q .
+          git config http.https://github.com/.extraheader \
+            "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
+          git remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          git fetch -q --depth=1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+
+      - name: Select Xcode
+        run: |
+          if [ -n "${{ vars.XCODE_PATH }}" ]; then sudo xcode-select -s "${{ vars.XCODE_PATH }}"; fi
+          xcodebuild -version
+          xcodebuild -downloadComponent MetalToolchain || true
+
+      - name: Test SpiceKit
+        working-directory: Packages/SpiceKit
+        run: swift test
+
+      - name: Build app
+        run: |
+          set -o pipefail
+          mkdir -p build
+          xcodebuild -project SpiceClient.xcodeproj -scheme SpiceClient -configuration Debug \
+            -destination 'platform=macOS,arch=arm64' -derivedDataPath build/DerivedData \
+            CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= \
+            build 2>&1 | tee build/xcodebuild.log
+          if grep -E '\.swift:[0-9]+:[0-9]+: warning' build/xcodebuild.log; then
+            echo "::error::Swift warnings found"
+            exit 1
+          fi

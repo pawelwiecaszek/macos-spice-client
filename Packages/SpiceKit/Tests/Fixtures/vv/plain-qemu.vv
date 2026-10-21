@@ -1,0 +1,6 @@
+# Minimal plain-text QEMU connection
+[virt-viewer]
+type=spice
+host=127.0.0.1
+port=5930
+fullscreen=0

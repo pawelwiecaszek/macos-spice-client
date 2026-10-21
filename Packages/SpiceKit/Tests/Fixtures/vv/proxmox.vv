@@ -1,0 +1,14 @@
+[virt-viewer]
+type=spice
+host=pvespiceproxy:00000000:101:pve-test::0000000000000000000000000000000000000000
+host-subject=OU=PVE Cluster Node,O=Proxmox Virtual Environment,CN=pve-test.example.invalid
+tls-port=61000
+password=not-a-real-ticket-0123456789
+proxy=http://pve-test.example.invalid:3128
+ca=-----BEGIN CERTIFICATE-----\nTUlJRkFLRUZBS0VGQUtF\n-----END CERTIFICATE-----\n
+delete-this-file=1
+title=VM 101 - test-vm
+toggle-fullscreen=Shift+F11
+release-cursor=Ctrl+Alt+R
+secure-attention=Ctrl+Alt+Ins
+secure-channels=main;inputs;cursor;playback;record;display;usbredir;smartcard
