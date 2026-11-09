@@ -8,6 +8,8 @@ final class AppSettings {
     static let shared = AppSettings()
 
     private let defaults: UserDefaults
+    /// Navigation state for opening a specific Settings pane from another window.
+    var selectedSettingsTab = 0
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
