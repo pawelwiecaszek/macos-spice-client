@@ -15,6 +15,7 @@ struct SpiceClientApp: App {
                     .keyboardShortcut("o")
                 Button("Virtual Machines…") { VMListWindow.shared.show() }
                     .keyboardShortcut("0")
+                Button("Open Ravada Portal…") { RavadaPortalWindow.shared.show() }
             }
             CommandMenu("Session") {
                 Button("Send Ctrl+Alt+Del") { SessionWindowManager.shared.keyController?.sendCtrlAltDelete() }
@@ -53,6 +54,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationWillTerminate(_ notification: Notification) {
+        DownloadWatcher.shared.stop()
+        RavadaPortalWindow.shared.close()
         SessionWindowManager.shared.closeAll()
     }
 }

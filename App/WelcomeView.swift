@@ -14,7 +14,7 @@ struct WelcomeView: View {
                 .accessibilityHidden(true)
             Text("MacOS Spice Client")
                 .font(.largeTitle.weight(.semibold))
-            Text("Open a virt-viewer connection file (.vv), for example the one your browser downloads when you click “SPICE” in Proxmox VE.")
+            Text("Connect through Proxmox, open your Ravada portal, or choose a virt-viewer connection file (.vv).")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: 380)
@@ -22,14 +22,16 @@ struct WelcomeView: View {
                 .buttonStyle(.glassProminent)
                 .controlSize(.large)
                 .keyboardShortcut(.defaultAction)
-            Button("Virtual Machines…") { VMListWindow.shared.show() }
+            Button("Proxmox Virtual Machines…") { VMListWindow.shared.show() }
+                .controlSize(.large)
+            Button("Open Ravada Portal…") { RavadaPortalWindow.shared.show() }
                 .controlSize(.large)
             Text("or drop a .vv file here")
                 .font(.footnote)
                 .foregroundStyle(.tertiary)
         }
         .padding(40)
-        .frame(width: 520, height: 360)
+        .frame(width: 520, height: 420)
         .background(isTargeted ? Color.accentColor.opacity(0.08) : .clear)
         .dropDestination(for: URL.self) { urls, _ in
             let files = urls.filter { $0.pathExtension.lowercased() == "vv" }
@@ -67,17 +69,18 @@ final class WelcomeWindow {
 
 struct SettingsView: View {
     @Bindable var settings: AppSettings
-    @State private var tab = 0
 
     var body: some View {
-        TabView(selection: $tab) {
+        TabView(selection: $settings.selectedSettingsTab) {
             Tab("General", systemImage: "gearshape", value: 0) { general }
             Tab("Proxmox", systemImage: "server.rack", value: 1) { ProxmoxSettingsView(store: .shared) }
+            Tab("Ravada", systemImage: "globe", value: 2) { RavadaSettingsView() }
+            Tab("Downloads", systemImage: "arrow.down.doc", value: 3) { DownloadSettingsView() }
         }
-        .frame(width: 520)
+        .frame(width: 600)
         // Sent here from a session's Power menu: go straight to the Proxmox tab.
         .onChange(of: ProxmoxStore.shared.pendingHost, initial: true) { _, host in
-            if host != nil { tab = 1 }
+            if host != nil { settings.selectedSettingsTab = 1 }
         }
     }
 

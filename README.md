@@ -23,6 +23,10 @@ Metal, and the app runs fully sandboxed.
 - **Virtual Machines** window (⌘0): browse the VMs of your Proxmox servers and connect,
   start, shut down, reboot, pause or stop them, without downloading a file.
 - **Power menu** in every Proxmox session window.
+- **Ravada portal**: sign in and choose a machine in an embedded browser; SPICE
+  connection files open directly in the native viewer. Proxmox remains available separately.
+- **Download helper**: optionally watch a chosen browser download folder and open new
+  `.vv` files automatically while the app runs.
 - **Automatic reconnect** after network drops or sleep, in the same window — shared
   devices, the mounted disc image and the microphone come back on their own.
 
@@ -116,6 +120,35 @@ your server under **Settings › Proxmox** with an API token (Datacenter › Per
 API Tokens). The token needs **VM.Audit**, **VM.PowerMgmt** and **VM.Console** — for
 example the *PVEVMUser* role on `/vms`. If privilege separation is on, give the role to
 the token itself, not only to its user.
+
+## Using it with Ravada
+
+1. Add your HTTPS portal address under **Settings › Ravada**.
+2. Choose **Open Ravada Portal…** from the welcome window or File menu.
+3. Sign in and select a machine using the portal. Its SPICE connection opens in a
+   native session window; the portal remains available for more connections.
+
+Ravada sessions start in a window even if the portal’s connection file requests
+fullscreen. Use the session’s fullscreen command to enter fullscreen when wanted.
+
+Each portal address has a separate browser login store. **Clear Portal Login** removes
+that portal’s saved browser data. Certificates must be trusted by macOS; downloading a
+connection file never changes portal certificate trust. Ravada API power controls and
+automatic ticket renewal are not provided; reopen the portal for a fresh connection.
+
+The portal workflow was informed by [spice-mac](https://github.com/BeriBeli/spice-mac).
+This app continues to use its own Swift SPICE implementation and Metal renderer.
+
+## Automatically opening browser downloads
+
+Under **Settings › Downloads**, turn on **Open new .vv downloads automatically** and
+choose your browser’s download folder. Existing files are ignored. New connection files
+open after their contents stabilize and pass validation; browser temporary files are
+ignored. Existing warnings for unencrypted connections still apply.
+
+The helper runs while the app is running, including after all windows close. It stops
+when you quit or turn it off. Folder access lasts for the current app session, so choose
+the folder again after restarting. No login item or background service is installed.
 
 ## License
 

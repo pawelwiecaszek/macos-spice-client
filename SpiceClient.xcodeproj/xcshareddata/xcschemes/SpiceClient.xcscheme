@@ -28,6 +28,12 @@
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
       shouldUseLaunchSchemeArgsEnv = "YES">
       <Testables>
+         <TestableReference skipped="NO">
+            <BuildableReference BuildableIdentifier="primary"
+               BlueprintIdentifier="B00000000000000000000001"
+               BuildableName="SpiceClientTests.xctest" BlueprintName="SpiceClientTests"
+               ReferencedContainer="container:SpiceClient.xcodeproj" />
+         </TestableReference>
          <TestableReference
             skipped = "NO">
             <BuildableReference
