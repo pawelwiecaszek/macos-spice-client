@@ -136,7 +136,7 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
 
     private func navigationFailed(_ error: any Error) {
         updateNavigation()
-        guard !stopped, (error as NSError).code != NSURLErrorCancelled else { return }
+        guard !stopped, !RavadaPortalConfiguration.isExpectedNavigationCancellation(error) else { return }
         errorMessage = String(localized: "The secure portal could not be loaded. Check its address, certificate, and your network connection, then reload.")
     }
 
@@ -247,7 +247,11 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
         defer { try? handle.close() }
         let data = try handle.read(upToCount: maxConnectionFileBytes + 1) ?? Data()
         guard data.count <= maxConnectionFileBytes else { throw PortalFileError.tooLarge }
-        return try VVFileParser.parse(Array(data)).profile
+        var profile = try VVFileParser.parse(Array(data)).profile
+        // The portal launches ordinary session windows even when its generated file
+        // requests fullscreen. Users can still enter fullscreen from the session UI.
+        profile.fullscreen = false
+        return profile
     }
 
     private enum PortalFileError: Error { case tooLarge }

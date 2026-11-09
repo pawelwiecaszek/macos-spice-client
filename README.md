@@ -128,6 +128,9 @@ the token itself, not only to its user.
 3. Sign in and select a machine using the portal. Its SPICE connection opens in a
    native session window; the portal remains available for more connections.
 
+Ravada sessions start in a window even if the portal’s connection file requests
+fullscreen. Use the session’s fullscreen command to enter fullscreen when wanted.
+
 Each portal address has a separate browser login store. **Clear Portal Login** removes
 that portal’s saved browser data. Certificates must be trusted by macOS; downloading a
 connection file never changes portal certificate trust. Ravada API power controls and

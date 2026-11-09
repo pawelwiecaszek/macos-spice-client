@@ -46,4 +46,29 @@ struct RavadaPortalTests {
         try Data(repeating: 65, count: 1024 * 1024 + 1).write(to: url)
         #expect(throws: (any Error).self) { try RavadaPortalModel.readConnectionFile(at: url) }
     }
+
+    @Test func downloadPolicyInterruptionIsNotAConnectionFailure() {
+        #expect(RavadaPortalConfiguration.isExpectedNavigationCancellation(
+            NSError(domain: "WebKitErrorDomain", code: 102)))
+        #expect(RavadaPortalConfiguration.isExpectedNavigationCancellation(
+            NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled)))
+        for error in [NSError(domain: NSURLErrorDomain, code: NSURLErrorServerCertificateUntrusted),
+                      NSError(domain: NSURLErrorDomain, code: NSURLErrorCannotConnectToHost),
+                      NSError(domain: "OtherDomain", code: 102),
+                      NSError(domain: "OtherDomain", code: NSURLErrorCancelled)] {
+            #expect(!RavadaPortalConfiguration.isExpectedNavigationCancellation(error))
+        }
+    }
+
+    @Test func ravadaFullscreenHintStillOpensAWindow() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).vv")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Data("[virt-viewer]\ntype=spice\nhost=example.invalid\nport=5930\nfullscreen=1\n".utf8)
+            .write(to: url)
+        let profile = try RavadaPortalModel.readConnectionFile(at: url)
+        #expect(!profile.fullscreen)
+        if case .file(let file, _, _) = SessionWindowManager.read(url) {
+            #expect(file.profile.fullscreen)
+        } else { Issue.record("Manual file opening must still honor fullscreen hints") }
+    }
 }

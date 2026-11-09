@@ -31,6 +31,15 @@ enum RavadaPortalConfiguration {
             || URL(fileURLWithPath: filename ?? response.suggestedFilename ?? "").pathExtension.lowercased() == "vv"
     }
 
+    static func isExpectedNavigationCancellation(_ error: any Error) -> Bool {
+        let error = error as NSError
+        if error.domain == NSURLErrorDomain { return error.code == NSURLErrorCancelled }
+        // WebKitErrors.h defines 102 as WebKitErrorFrameLoadInterruptedByPolicyChange.
+        // Converting an inline .vv response to WKDownload interrupts its page load.
+        // Use the domain string because the legacy exported constant is deprecated.
+        return error.domain == "WebKitErrorDomain" && error.code == 102
+    }
+
     @MainActor
     static func websiteDataStore(for portal: URL, replacing: Bool = false) -> WKWebsiteDataStore {
         // Different portal origins must not share authentication state. WebKit owns the

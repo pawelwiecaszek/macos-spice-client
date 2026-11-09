@@ -268,6 +268,8 @@ Goal: pick an `.iso` on the Mac and have it appear in the guest as a CD/DVD driv
 - `App/Ravada` embeds the configured HTTPS portal with WebKit; browser authentication
   stays in a separate persistent WebKit data store for each portal origin. No native
   Ravada API or automatic ticket-renewal contract is assumed.
+- Ravada console sessions start windowed regardless of a generated `fullscreen` hint;
+  manually opened connection files retain their existing fullscreen behavior.
 - Connection downloads must remain on the configured HTTPS origin (including port),
   preserve the browser request/session, use the existing `VVFileParser`, and be bounded
   to 1 MiB with a timeout. Clean up app-owned temporary files. Portal TLS uses macOS
