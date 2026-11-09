@@ -13,7 +13,7 @@ final class RavadaPortalWindow: NSObject, NSWindowDelegate {
         let url = RavadaPortalConfiguration.portalURL(address)
         if window == nil || model?.portalURL != url {
             model?.stop()
-            let model = url.map(RavadaPortalModel.init)
+            let model = url.map { RavadaPortalModel(portalURL: $0) }
             self.model = model
             let hosting = NSHostingController(rootView: RavadaPortalView(model: model))
             hosting.sceneBridgingOptions = [.toolbars, .title]
@@ -88,27 +88,58 @@ private struct BrowserContent: View {
 
     var body: some View {
         PortalWebView(webView: model.webView)
+            .safeAreaInset(edge: .bottom) {
+                if model.requiresSignIn {
+                    Text("Sign in through the portal to continue.")
+                        .font(.callout)
+                        .padding(8)
+                        .frame(maxWidth: .infinity)
+                        .background(.bar)
+                }
+            }
             .toolbar {
                 ToolbarItemGroup(placement: .navigation) {
                     Button("Back", systemImage: "chevron.backward") { model.webView.goBack() }
                         .disabled(!model.canGoBack)
                     Button("Forward", systemImage: "chevron.forward") { model.webView.goForward() }
                         .disabled(!model.canGoForward)
-                    Button("Reload", systemImage: "arrow.clockwise") { model.webView.reload() }
-                    Button("Home", systemImage: "house") { model.load() }
-                    if model.isLoading || model.isDownloading {
+                    Button("Reload Portal", systemImage: "arrow.clockwise") { model.load() }
+                        .help("Return to the portal without resubmitting the previous action")
+                    Button("Stop", systemImage: "xmark") { model.cancelCurrentAction() }
+                        .disabled(!model.isBusy)
+                        .accessibilityIdentifier("stopPortalAction")
+                    Menu("Diagnostics", systemImage: "stethoscope") {
+                        Button("Copy Portal Diagnostics") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(model.diagnostics.summary, forType: .string)
+                        }
+                    }
+                    .accessibilityIdentifier("portalDiagnosticsMenu")
+                    .help("Copy counters and error categories without addresses or credentials")
+                    if model.isBusy {
                         ProgressView().controlSize(.small).accessibilityLabel("Loading portal")
                     }
                 }
             }
             .alert("Portal Action Failed", isPresented: Binding(
-                get: { model.errorMessage != nil },
-                set: { if !$0 { model.errorMessage = nil } }
+                get: { model.failure != nil },
+                set: { if !$0 { model.failure = nil } }
             )) {
-                Button("OK", role: .cancel) { model.errorMessage = nil }
+                if let failure = model.failure {
+                    Button(recoveryTitle(failure.recovery)) { model.load() }
+                }
+                Button("Dismiss", role: .cancel) { model.failure = nil }
             } message: {
-                Text(model.errorMessage ?? "")
+                Text(model.failure?.message ?? "")
             }
+    }
+
+    private func recoveryTitle(_ recovery: RavadaPortalFailure.Recovery) -> String {
+        switch recovery {
+        case .reloadPortal: String(localized: "Reload Portal")
+        case .signIn: String(localized: "Sign In Again")
+        case .chooseMachine: String(localized: "Return to Portal")
+        }
     }
 }
 

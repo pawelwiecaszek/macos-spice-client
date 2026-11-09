@@ -270,6 +270,11 @@ Goal: pick an `.iso` on the Mac and have it appear in the guest as a CD/DVD driv
   Ravada API or automatic ticket-renewal contract is assumed.
 - Ravada console sessions start windowed regardless of a generated `fullscreen` hint;
   manually opened connection files retain their existing fullscreen behavior.
+- Ravada may render its LDAP login page as HTTP 401; allow same-origin renderable HTML
+  login pages instead of discarding them. Recovery navigates to the configured portal
+  without replaying a machine action. Stop invalidates pending downloads and parsing;
+  late navigation callbacks must not overwrite a newer load's state. Portal diagnostics
+  are bounded in-memory counters and fixed failure categories only, copied on request.
 - Connection downloads must remain on the configured HTTPS origin (including port),
   preserve the browser request/session, use the existing `VVFileParser`, and be bounded
   to 1 MiB with a timeout. Clean up app-owned temporary files. Portal TLS uses macOS

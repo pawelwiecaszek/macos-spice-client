@@ -131,6 +131,15 @@ the token itself, not only to its user.
 Ravada sessions start in a window even if the portal’s connection file requests
 fullscreen. Use the session’s fullscreen command to enter fullscreen when wanted.
 
+The portal distinguishes network, certificate, sign-in, permission, and connection-file
+errors. Recovery returns to the configured portal so you can choose a machine again;
+it does not automatically resubmit the previous action. **Stop** cancels the current
+page load or connection download, including a file still being processed.
+
+Use the portal toolbar’s **Diagnostics › Copy Portal Diagnostics** to copy a support
+summary. It contains bounded in-memory counters and fixed error categories, without
+portal addresses, usernames, passwords, cookies, tickets, or guest contents.
+
 Each portal address has a separate browser login store. **Clear Portal Login** removes
 that portal’s saved browser data. Certificates must be trusted by macOS; downloading a
 connection file never changes portal certificate trust. Ravada API power controls and

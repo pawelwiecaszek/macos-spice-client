@@ -37,4 +37,29 @@ final class SpiceClientUITests: XCTestCase {
         screenshot.lifetime = .keepAlways
         add(screenshot)
     }
+
+    @MainActor
+    func testPortalFailureOffersRecoveryAndDiagnostics() throws {
+        let app = XCUIApplication()
+        // Reserved .invalid domain: exercise network recovery without contacting a
+        // saved portal, submitting credentials, or issuing machine actions.
+        app.launchArguments = ["-ravadaPortalURL", "https://portal.example.invalid/"]
+        app.launch()
+        let portal = app.buttons["Open Ravada Portal…"]
+        XCTAssertTrue(portal.waitForExistence(timeout: 10))
+        portal.click()
+        // SwiftUI presents this as a native macOS sheet; identify its controls
+        // rather than depending on XCTest's alert/sheet element classification.
+        let dismiss = app.buttons["Dismiss"].firstMatch
+        XCTAssertTrue(dismiss.waitForExistence(timeout: 40))
+        XCTAssertTrue(app.staticTexts["Portal Action Failed"].exists)
+        dismiss.click()
+        XCTAssertTrue(app.buttons["stopPortalAction"].exists)
+        let diagnostics = app.descendants(matching: .any)["portalDiagnosticsMenu"].firstMatch
+        XCTAssertTrue(diagnostics.exists)
+        let screenshot = XCTAttachment(screenshot: app.windows["Ravada Portal"].screenshot())
+        screenshot.name = "Portal recovery controls"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+    }
 }

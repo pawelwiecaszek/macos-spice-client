@@ -40,6 +40,15 @@ enum RavadaPortalConfiguration {
         return error.domain == "WebKitErrorDomain" && error.code == 102
     }
 
+    static func shouldDisplaySignInPage(_ response: URLResponse, portalURL: URL,
+                                       isMainFrame: Bool, canShowMIMEType: Bool) -> Bool {
+        // Ravada's before_dispatch hook renders its login form with status 401 for
+        // protected pages. Canceling that response prevents users from signing in.
+        guard isMainFrame, canShowMIMEType, sameOrigin(response.url, as: portalURL),
+              (response as? HTTPURLResponse)?.statusCode == 401 else { return false }
+        return ["text/html", "application/xhtml+xml"].contains(response.mimeType?.lowercased() ?? "")
+    }
+
     @MainActor
     static func websiteDataStore(for portal: URL, replacing: Bool = false) -> WKWebsiteDataStore {
         // Different portal origins must not share authentication state. WebKit owns the
