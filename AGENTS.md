@@ -262,6 +262,51 @@ Goal: pick an `.iso` on the Mac and have it appear in the guest as a CD/DVD driv
 - TLS for the API: macOS trust **or** the cluster CA learned from that host's `.vv` (`pve-root-ca`), with hostname check; or a leaf SHA-256 fingerprint the user explicitly pinned after seeing it. No skip-verification path.
 - Endpoints: `GET /cluster/resources?type=vm`, `GET /nodes/{node}/qemu/{vmid}/status/current`, `POST …/status/{start|shutdown|reboot|reset|stop|suspend|resume}`, `POST …/spiceproxy` (fresh connection file → parsed by `VVFileParser`, so it gets the same validation as a downloaded `.vv`). Reset/Stop require confirmation. Token needs VM.Audit, VM.PowerMgmt, VM.Console.
 
+## 7e. Ravada portal and connection-download helper (M8)
+
+- Connections, portal browsing, saved profiles, Proxmox VM browsing and Settings share
+  `MainWindowController`; VDI windows remain independent. Hidden portals reject
+  navigation/download admission and late connection handoffs. Cmd+, and VDI Connections
+  return to the main window. Focusing it preserves unsaved drafts.
+
+- Offer Ravada alongside the native Proxmox VM browser and manual `.vv` opening.
+- Saved Ravada profiles own a name, validated HTTPS address, favorite flag, browser-store
+  UUID and optional session preference overrides. Migrate the legacy address and its
+  existing origin-store UUID once. Persist empty profiles after removal so legacy data
+  cannot resurrect them. New same-origin profiles still receive independent login stores.
+- Profile edits, selection/removal and login clearing must not close active VDI sessions.
+  An origin change creates a fresh browser store; clear-login rotates only the target
+  profile's store before erasing old browser data. Corrupt metadata is preserved and
+  writes are blocked rather than silently discarding saved profiles.
+- Profile preferences inherit General settings unless explicitly overridden. Overrides
+  use nonpersistent session settings, never write General defaults, and survive reconnect.
+- `App/Ravada` embeds the configured HTTPS portal with WebKit; browser authentication
+  stays in a separate persistent WebKit data store for each portal origin. No native
+  Ravada API or automatic ticket-renewal contract is assumed.
+- Ravada console sessions start windowed regardless of a generated `fullscreen` hint;
+  manually opened connection files retain their existing fullscreen behavior.
+- Ravada may render its LDAP login page as HTTP 401; allow same-origin renderable HTML
+  login pages instead of discarding them. Recovery navigates to the configured portal
+  without replaying a machine action. Stop invalidates pending downloads and parsing;
+  late navigation callbacks must not overwrite a newer load's state. Portal diagnostics
+  are bounded in-memory counters and fixed failure categories only, copied on request.
+- Each rendered portal document may offer one initial automatic connection. Any accepted
+  handoff, including a manual View download, consumes that allowance. Later downloads
+  require `WKDownload.isUserInitiated`; blocked automatic offers show a nonmodal notice
+  and increment `automaticLaunchesBlocked`. Do not infer user intent from mouse-button
+  numeric values or bypass the existing origin/frame checks.
+- Connection downloads must remain on the configured HTTPS origin (including port),
+  preserve the browser request/session, use the existing `VVFileParser`, and be bounded
+  to 1 MiB with a timeout. Clean up app-owned temporary files. Portal TLS uses macOS
+  trust; a downloaded `.vv` never teaches the portal a CA.
+- `App/Downloads` is opt-in and watches a user-selected folder only while the app runs.
+  Permission is session-only; no new entitlement, login item, or background service.
+  Ignore baseline files, wait for stable contents, reject symlinks and oversized files,
+  and verify validated contents again during delivery. Central file-opening deduplication
+  prevents browser/Finder/watcher duplicates without retaining plaintext tickets.
+- `AppIntegrationTests` contains hosted Swift Testing tests for these app workflows;
+  `SpiceClientTests` is included in the shared Xcode scheme.
+
 ## 8. Input & window behaviour
 
 - Capture keyboard in a first-responder `NSView`; map `NSEvent.keyCode` (macOS virtual key) → PC AT set-1 scancode via a static table in `App/Input/Keymap.swift`. Extended keys (arrows, Ins/Del/Home/End/PgUp/PgDn, right Ctrl/Alt, keypad Enter/÷) use the `0xE0` prefix; key-up sets bit `0x80` on the scancode byte. Verify encoding against `spice-gtk` before shipping.

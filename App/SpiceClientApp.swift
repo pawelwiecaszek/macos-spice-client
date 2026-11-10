@@ -10,11 +10,18 @@ struct SpiceClientApp: App {
             SettingsView(settings: AppSettings.shared)
         }
         .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") { MainWindowController.shared.showSettings() }
+                    .keyboardShortcut(",")
+            }
             CommandGroup(replacing: .newItem) {
+                Button("Connections") { MainWindowController.shared.showCurrentPage() }
                 Button("Open Connection File…") { SessionWindowManager.shared.presentOpenPanel() }
                     .keyboardShortcut("o")
-                Button("Virtual Machines…") { VMListWindow.shared.show() }
+                Button("Virtual Machines…") { MainWindowController.shared.showProxmox() }
                     .keyboardShortcut("0")
+                Button("Open Ravada Portal…") { MainWindowController.shared.showPortal() }
+                Menu("Saved Ravada Portals") { RavadaPortalMenuContent() }
             }
             CommandMenu("Session") {
                 Button("Send Ctrl+Alt+Del") { SessionWindowManager.shared.keyController?.sendCtrlAltDelete() }
@@ -41,18 +48,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Files opened at launch arrive before this point; otherwise show the welcome window.
         if !openedFileAtLaunch && !SessionWindowManager.shared.hasSessions {
-            WelcomeWindow.shared.show()
+            MainWindowController.shared.showHome()
         }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag { WelcomeWindow.shared.show() }
+        MainWindowController.shared.showCurrentPage()
         return true
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationWillTerminate(_ notification: Notification) {
+        DownloadWatcher.shared.stop()
+        MainWindowController.shared.close()
         SessionWindowManager.shared.closeAll()
     }
 }
