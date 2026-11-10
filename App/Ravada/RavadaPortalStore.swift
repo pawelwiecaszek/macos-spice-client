@@ -14,7 +14,8 @@ final class RavadaPortalStore {
     private(set) var profiles: [RavadaPortalProfile] = []
     private(set) var selectedID: UUID?
     private(set) var errorMessage: String?
-    @ObservationIgnored private let defaults: UserDefaults
+    /// Injected preference domain; internal so hosted tests can verify isolation.
+    @ObservationIgnored let defaults: UserDefaults
     @ObservationIgnored private var unreadableProfiles = false
 
     var canModify: Bool { !unreadableProfiles }
@@ -127,8 +128,10 @@ final class RavadaPortalStore {
     private func migrateLegacyProfile() {
         guard let legacy = defaults.string(forKey: RavadaPortalConfiguration.urlKey),
               !legacy.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            do { try persist([], selectedID: nil) }
-            catch { errorMessage = StoreError.cannotSave.localizedDescription }
+            // Merely opening the app without an address is not a completed migration.
+            // A later launch may supply the existing portal via arguments. Only an
+            // explicit removal persists [], preventing deliberately removed profiles
+            // from being resurrected without blocking that first real migration.
             return
         }
         do {
@@ -180,6 +183,15 @@ final class RavadaPortalStore {
            suite.hasPrefix("com.pawelwiecaszek.spiceclient.uitests."),
            let defaults = UserDefaults(suiteName: suite) {
             return defaults
+        }
+        // Hosted integration tests launch the app too, before the tests instantiate
+        // their own stores. Keep that initial UI away from production preferences.
+        let environment = ProcessInfo.processInfo.environment
+        if environment["XCTestBundlePath"] != nil || environment["XCTestConfigurationFilePath"] != nil
+            || NSClassFromString("XCTestCase") != nil {
+            if let defaults = UserDefaults(suiteName: "com.pawelwiecaszek.spiceclient.unittests.\(UUID().uuidString)") {
+                return defaults
+            }
         }
         #endif
         return .standard

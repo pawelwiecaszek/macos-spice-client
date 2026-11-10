@@ -4,6 +4,10 @@ import Testing
 
 @MainActor
 struct RavadaPortalStoreTests {
+    @Test func hostedAppSharedStoreDoesNotUseProductionPreferences() {
+        #expect(RavadaPortalStore.shared.defaults !== UserDefaults.standard)
+    }
+
     private func withDefaults(_ body: (UserDefaults) throws -> Void) throws {
         let suite = "com.pawelwiecaszek.spiceclient.tests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -26,6 +30,22 @@ struct RavadaPortalStoreTests {
             #expect(reloaded.selectedProfile == profile)
             #expect(reloaded.errorMessage == nil)
             #expect(reloaded.canModify)
+        }
+    }
+
+    @Test func emptyFirstLaunchDoesNotPreventLaterLoginPreservingMigration() throws {
+        try withDefaults { defaults in
+            let first = RavadaPortalStore(defaults: defaults)
+            #expect(first.profiles.isEmpty)
+            #expect(defaults.object(forKey: RavadaPortalStore.profilesKey) == nil)
+            let previousBrowserID = UUID()
+            defaults.set("https://portal.example.invalid/", forKey: RavadaPortalConfiguration.urlKey)
+            defaults.set(["portal.example.invalid:443": previousBrowserID.uuidString],
+                         forKey: "ravadaPortalWebsiteDataStores")
+            let migrated = RavadaPortalStore(defaults: defaults)
+            let profile = try #require(migrated.selectedProfile)
+            #expect(profile.websiteDataStoreID == previousBrowserID)
+            #expect(migrated.profiles.count == 1)
         }
     }
 
