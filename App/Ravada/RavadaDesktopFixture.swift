@@ -8,12 +8,15 @@ import SpiceKit
 enum RavadaDesktopFixture {
     static func store(profile: RavadaPortalProfile, defaults: UserDefaults) -> RavadaDesktopStore? {
         let environment = ProcessInfo.processInfo.environment
-        guard environment["SPICE_RAVADA_DESKTOP_FIXTURE"] == "1",
+        guard let mode = environment["SPICE_RAVADA_DESKTOP_FIXTURE"], ["1", "expired"].contains(mode),
               environment["SPICE_RAVADA_TEST_SUITE"]?.hasPrefix("com.pawelwiecaszek.spiceclient.uitests.") == true else { return nil }
         let body = #"[{"id":10,"name":"Example Linux","is_base":1,"list_clones":[{"id":42,"name":"Example Running","is_active":1,"is_locked":0},{"id":43,"name":"Example Stopped","is_active":0,"is_locked":0}]},{"id":20,"name":"Template Requiring Portal","is_base":1,"list_clones":[]}]"#
+        var reads = 0
         return RavadaDesktopStore(profile: profile, defaults: defaults,
             request: { request in
                 guard request == .catalog else { throw RavadaBrokerError.portalRequired }
+                reads += 1
+                if mode == "expired" && reads > 1 { throw RavadaBrokerError.accessDenied }
                 return .init(data: Data(body.utf8), status: 200, contentType: "application/json")
             }, cancel: {}, open: { _, _ in false })
     }

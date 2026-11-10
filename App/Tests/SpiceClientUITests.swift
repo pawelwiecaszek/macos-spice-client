@@ -178,4 +178,23 @@ final class SpiceClientUITests: XCTestCase {
         XCTAssertEqual(app.windows.count, 1)
     }
 
+    @MainActor
+    func testExpiredDesktopLoginShowsAccessGuidanceInsteadOfEmptyAccount() throws {
+        let app = makeApp()
+        app.launchEnvironment["SPICE_RAVADA_DESKTOP_FIXTURE"] = "expired"
+        app.launchArguments = ["-ravadaPortalURL", "https://portal.example.invalid/"]
+        app.launch()
+        app.buttons["openRavadaDesktops"].click()
+        XCTAssertTrue(app.staticTexts["Example Running"].waitForExistence(timeout: 10))
+        app.buttons["refreshRavadaDesktops"].click()
+        XCTAssertTrue(app.staticTexts["Desktop Access Unavailable"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.staticTexts["No Desktops Available"].exists)
+        XCTAssertFalse(app.staticTexts["Ravada has not listed any desktops for this account."].exists)
+        XCTAssertFalse(app.staticTexts["Example Running"].exists)
+        let screenshot = XCTAttachment(screenshot: app.windows["connectionsWindow"].screenshot())
+        screenshot.name = "Desktop access guidance after sign out"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+    }
+
 }

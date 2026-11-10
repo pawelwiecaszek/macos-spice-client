@@ -105,3 +105,7 @@ may continue. A base requiring provisioning, unknown state/permissions or unsupp
 display discovery offers Open in Portal. Never infer readiness from successful HTTP
 alone. Keep search/favorite/Connect keyboard accessible and labels readable at narrow
 window widths. Manual refresh only; job polling stops when leaving the page.
+
+A failed catalog refresh clears cached success/rows and shows Desktop Access Unavailable
+with sign-in/access recovery. No Desktops Available is reserved for a successful empty
+catalog response. Empty/error content fills remaining height so the page header stays at the top.

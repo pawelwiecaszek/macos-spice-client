@@ -176,6 +176,19 @@ struct RavadaDesktopStoreTests {
         #expect(store.errorMessage == RavadaBrokerError.portalRequired.localizedDescription)
     }
 
+    @Test func expiredLoginAfterSuccessfulCatalogClearsSuccessAndCachedRows() async throws {
+        let fixture = DesktopFixture(active: true)
+        let store = fixture.store()
+        store.activate(); try await idle(store)
+        #expect(store.hasLoaded)
+        #expect(!store.rows.isEmpty)
+        fixture.expired = true
+        store.refresh(); try await idle(store)
+        #expect(!store.hasLoaded)
+        #expect(store.rows.isEmpty)
+        #expect(store.errorMessage == RavadaBrokerError.accessDenied.localizedDescription)
+    }
+
     @Test func searchFavoritesPersistAndRemainProfileScoped() async throws {
         let fixture = DesktopFixture(active: true)
         let store = fixture.store()
@@ -218,6 +231,7 @@ private final class DesktopFixture {
     var wrongJobMachine = false
     var ambiguousStart = false
     var denied = false
+    var expired = false
     var blockJobs = false
     var neverDone = false
     var revokeAfterJob = false
@@ -255,6 +269,7 @@ private final class DesktopFixture {
     private func request(_ request: RavadaBrokerRequest) async throws -> RavadaBrokerResponse {
         switch request {
         case .catalog:
+            if expired { throw RavadaBrokerError.accessDenied }
             if previewWork && active { pendingInfoReads = 1 }
             if denied { return json("[]") }
             return json("[{\"id\":10,\"name\":\"Base\",\"is_base\":1,\"list_clones\":[{\"id\":42,\"name\":\"My Desktop\",\"is_active\":\(active ? 1 : 0),\"is_locked\":0}]}]")

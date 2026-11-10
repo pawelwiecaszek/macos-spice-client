@@ -46,14 +46,23 @@ struct RavadaDesktopListView: View {
                     ProgressView("Loading desktops…")
                     Button("Cancel") { store.cancel() }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if store.rows.isEmpty && store.errorMessage != nil {
+                ContentUnavailableView {
+                    Label("Desktop Access Unavailable", systemImage: "person.crop.circle.badge.exclamationmark")
+                } description: {
+                    Text("Open the portal to sign in or review your access, then refresh your desktops.")
+                } actions: { Button("Open Portal", action: openPortal) }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if store.rows.isEmpty {
                 ContentUnavailableView {
                     Label(store.hasLoaded ? "No Desktops Available" : "Desktop Catalog", systemImage: "desktopcomputer")
                 } description: {
                     Text(store.hasLoaded ? "Ravada has not listed any desktops for this account." : "Sign in through the portal, then refresh your desktops.")
                 } actions: { Button("Open Portal", action: openPortal) }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if store.visibleRows.isEmpty {
                 ContentUnavailableView.search(text: store.query)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(store.visibleRows) { row in
                     HStack(spacing: 12) {

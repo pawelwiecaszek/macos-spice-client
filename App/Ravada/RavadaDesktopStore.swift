@@ -91,7 +91,7 @@ final class RavadaDesktopStore: NSObject {
                 rows = try RavadaDesktopRow.rows(in: catalog); hasLoaded = true
             } catch {
                 guard generation == token, !Task.isCancelled else { return }
-                rows = []; errorMessage = message(error)
+                rows = []; hasLoaded = false; errorMessage = message(error)
             }
             guard generation == token else { return }
             isRefreshing = false; work = nil
