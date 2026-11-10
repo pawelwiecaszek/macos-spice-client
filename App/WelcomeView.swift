@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 /// Shown when the app is launched without a connection file.
 struct WelcomeView: View {
     @State private var isTargeted = false
+    @Bindable private var portals = RavadaPortalStore.shared
 
     var body: some View {
         VStack(spacing: 16) {
@@ -14,7 +15,7 @@ struct WelcomeView: View {
                 .accessibilityHidden(true)
             Text("MacOS Spice Client")
                 .font(.largeTitle.weight(.semibold))
-            Text("Open a virt-viewer connection file (.vv), for example the one your browser downloads when you click “SPICE” in Proxmox VE.")
+            Text("Connect through Proxmox, open your Ravada portal, or choose a virt-viewer connection file (.vv).")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: 380)
@@ -22,14 +23,24 @@ struct WelcomeView: View {
                 .buttonStyle(.glassProminent)
                 .controlSize(.large)
                 .keyboardShortcut(.defaultAction)
-            Button("Virtual Machines…") { VMListWindow.shared.show() }
+            Button("Proxmox Virtual Machines…") { MainWindowController.shared.showProxmox() }
                 .controlSize(.large)
+            Button("Open Ravada Portal…") { MainWindowController.shared.showPortal() }
+                .controlSize(.large)
+            if !portals.favorites.isEmpty {
+                Menu("Favorite Ravada Portals") {
+                    ForEach(portals.favorites) { profile in
+                        Button(profile.name) { MainWindowController.shared.showPortal(profileID: profile.id) }
+                    }
+                }
+                .accessibilityIdentifier("ravadaFavoritePortals")
+            }
             Text("or drop a .vv file here")
                 .font(.footnote)
                 .foregroundStyle(.tertiary)
         }
         .padding(40)
-        .frame(width: 520, height: 360)
+        .frame(width: 520, height: portals.favorites.isEmpty ? 420 : 470)
         .background(isTargeted ? Color.accentColor.opacity(0.08) : .clear)
         .dropDestination(for: URL.self) { urls, _ in
             let files = urls.filter { $0.pathExtension.lowercased() == "vv" }
@@ -39,45 +50,20 @@ struct WelcomeView: View {
     }
 }
 
-/// AppKit-managed welcome window (SwiftUI's own windows would also open on file launches).
-@MainActor
-final class WelcomeWindow {
-    static let shared = WelcomeWindow()
-    private var window: NSWindow?
-
-    func show() {
-        if window == nil {
-            let hosting = NSHostingController(rootView: WelcomeView())
-            let window = NSWindow(contentViewController: hosting)
-            window.styleMask = [.titled, .closable, .fullSizeContentView]
-            window.titlebarAppearsTransparent = true
-            window.title = String(localized: "Welcome")
-            window.isReleasedWhenClosed = false
-            window.center()
-            self.window = window
-        }
-        window?.makeKeyAndOrderFront(nil)
-        NSApp.activate()
-    }
-
-    func close() {
-        window?.close()
-    }
-}
-
 struct SettingsView: View {
     @Bindable var settings: AppSettings
-    @State private var tab = 0
 
     var body: some View {
-        TabView(selection: $tab) {
+        TabView(selection: $settings.selectedSettingsTab) {
             Tab("General", systemImage: "gearshape", value: 0) { general }
             Tab("Proxmox", systemImage: "server.rack", value: 1) { ProxmoxSettingsView(store: .shared) }
+            Tab("Ravada", systemImage: "globe", value: 2) { RavadaSettingsView() }
+            Tab("Downloads", systemImage: "arrow.down.doc", value: 3) { DownloadSettingsView() }
         }
-        .frame(width: 520)
+        .frame(width: 600)
         // Sent here from a session's Power menu: go straight to the Proxmox tab.
         .onChange(of: ProxmoxStore.shared.pendingHost, initial: true) { _, host in
-            if host != nil { tab = 1 }
+            if host != nil { settings.selectedSettingsTab = 1 }
         }
     }
 

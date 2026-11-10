@@ -16,7 +16,6 @@ struct VMListView: View {
     @State private var loaded: Set<UUID> = []
     @State private var busy: Set<String> = []
     @State private var loading = false
-    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         Group {
@@ -26,7 +25,7 @@ struct VMListView: View {
                 } description: {
                     Text("Add a Proxmox server with an API token to start, stop and connect to virtual machines from here.")
                 } actions: {
-                    Button("Open Settings…") { openSettings() }
+                    Button("Open Settings…") { MainWindowController.shared.showSettings(tab: 1) }
                 }
             } else {
                 List {
@@ -168,39 +167,4 @@ struct VMListView: View {
             await reload()
         }
     }
-}
-
-/// AppKit-managed window for `VMListView`.
-@MainActor
-final class VMListWindow {
-    static let shared = VMListWindow()
-    private var window: NSWindow?
-
-    func show() {
-        if window == nil {
-            let hosting = NSHostingController(rootView: VMListView(store: .shared))
-            hosting.sceneBridgingOptions = [.toolbars, .title]
-            let window = NSWindow(contentViewController: hosting)
-            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-            window.title = String(localized: "Virtual Machines")
-            window.isReleasedWhenClosed = false
-            window.setContentSize(NSSize(width: 560, height: 480))
-            window.center()
-            self.window = window
-            // Drop the window (and its view's polling tasks) when it closes.
-            closeObserver = NotificationCenter.default.addObserver(
-                forName: NSWindow.willCloseNotification, object: window, queue: .main
-            ) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    self?.window = nil
-                    if let observer = self?.closeObserver { NotificationCenter.default.removeObserver(observer) }
-                    self?.closeObserver = nil
-                }
-            }
-        }
-        window?.makeKeyAndOrderFront(nil)
-        NSApp.activate()
-    }
-
-    private var closeObserver: (any NSObjectProtocol)?
 }

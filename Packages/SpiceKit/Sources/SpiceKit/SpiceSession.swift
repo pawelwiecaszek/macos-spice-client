@@ -4,6 +4,7 @@
 @_exported import SpiceTransport
 @_exported import AudioHost
 @_exported import Proxmox
+@_exported import Ravada
 @_exported import SmartcardHost
 @_exported import SpiceWire
 @_exported import USBEmulation

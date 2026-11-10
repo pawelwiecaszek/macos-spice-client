@@ -1,4 +1,6 @@
 import AppKit
+import CryptoKit
+import Darwin
 import SpiceKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -11,6 +13,8 @@ final class SessionWindowManager: NSObject, NSWindowDelegate {
 
     private var windows: [UUID: (window: NSWindow, controller: SessionController)] = [:]
     private let log = Logger(subsystem: "com.pawelwiecaszek.spiceclient", category: "app")
+    private var openingFiles: Set<URL> = []
+    private var deliveryHistory = ConnectionFileDeliveryHistory()
 
     var hasSessions: Bool { !windows.isEmpty }
 
@@ -25,43 +29,73 @@ final class SessionWindowManager: NSObject, NSWindowDelegate {
     /// Connection files are a few KiB; anything bigger isn't one.
     private nonisolated static let maxConnectionFileBytes = 1024 * 1024
 
-    private enum ReadResult: Sendable {
-        case file(VVFile, deleteFailed: Bool)
-        case failed(String)
+    enum ReadResult: Sendable {
+        case file(VVFile, digest: String, deleteFailed: Bool)
+        case failed(String, missing: Bool = false)
     }
 
     /// Reads and parses off the main actor, then connects immediately (Proxmox tickets
     /// expire in ~30 s).
-    func open(_ url: URL) {
+    func open(_ url: URL, expectedContents: Data? = nil) {
+        guard url.isFileURL else { return }
+        let key = url.standardizedFileURL
+        guard openingFiles.insert(key).inserted else { return }
         Task {
-            let result = await Task.detached(priority: .userInitiated) { Self.read(url) }.value
+            defer { openingFiles.remove(key) }
+            let result = await Task.detached(priority: .userInitiated) {
+                Self.read(url, expectedContents: expectedContents)
+            }.value
             switch result {
-            case .failed(let message):
+            case .failed(let message, let missing):
+                if missing && deliveryHistory.wasJustDeleted(key) { return }
                 presentError(message, file: url)
-            case .file(let file, let deleteFailed):
+            case .file(let file, let digest, let deleteFailed):
+                if file.profile.deleteThisFile && !deleteFailed { deliveryHistory.recordDeletion(of: key) }
+                guard deliveryHistory.accept(digest: digest) else { return }
                 log.debug("vv file parsed with \(file.warnings.count, privacy: .public) warning(s)")
                 for warning in file.warnings { log.debug("vv warning: \(String(describing: warning), privacy: .private)") }
                 if deleteFailed { log.debug("could not delete the connection file") }
                 // Note: a downloaded .vv is NOT trusted to teach the app a CA for the Proxmox
                 // API (anyone can craft one); CAs are only learned from files fetched over the API.
-                openSession(file.profile)
+                if !openSession(file.profile) { deliveryHistory.discard(digest: digest) }
             }
         }
     }
 
-    private nonisolated static func read(_ url: URL) -> ReadResult {
+    nonisolated static func read(_ url: URL, expectedContents: Data? = nil) -> ReadResult {
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
         let file: VVFile
+        let digest: String
         do {
-            let handle = try FileHandle(forReadingFrom: url)
+            // A watcher candidate can be replaced before delivery. Never follow a symlink
+            // or block on a substituted pipe; validate and read the same descriptor.
+            let descriptor = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+            guard descriptor >= 0 else {
+                let missing = errno == ENOENT
+                return .failed(String(localized: "The connection file could not be read."), missing: missing)
+            }
+            let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
             defer { try? handle.close() }
+            var before = stat()
+            guard fstat(descriptor, &before) == 0, before.st_mode & S_IFMT == S_IFREG else {
+                return .failed(String(localized: "Choose a regular connection file."))
+            }
             // Read one byte past the limit to tell "exactly at the limit" from "too big".
             let data = try handle.read(upToCount: maxConnectionFileBytes + 1) ?? Data()
             guard data.count <= maxConnectionFileBytes else {
                 return .failed(String(localized: "The file is too large to be a connection file."))
             }
+            var after = stat()
+            guard fstat(descriptor, &after) == 0,
+                  before.st_size == after.st_size,
+                  before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
+                  before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+                  expectedContents.map({ $0 == data }) ?? true else {
+                return .failed(String(localized: "The connection file changed while it was being opened. Try again after the download finishes."))
+            }
             file = try VVFileParser.parse(Array(data))
+            digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         } catch let error as VVFileError {
             return .failed(error.localizedDescription)
         } catch {
@@ -71,7 +105,7 @@ final class SessionWindowManager: NSObject, NSWindowDelegate {
         if file.profile.deleteThisFile {
             do { try FileManager.default.removeItem(at: url) } catch { deleteFailed = true }
         }
-        return .file(file, deleteFailed: deleteFailed)
+        return .file(file, digest: digest, deleteFailed: deleteFailed)
     }
 
     func presentOpenPanel() {
@@ -85,9 +119,11 @@ final class SessionWindowManager: NSObject, NSWindowDelegate {
 
     // MARK: Windows
 
-    func openSession(_ profile: ConnectionProfile) {
-        guard confirmUnencrypted(profile) else { return }
-        let controller = SessionController(profile: profile)
+    @discardableResult
+    func openSession(_ profile: ConnectionProfile, settings: AppSettings = .shared,
+                     origin: SessionOrigin? = nil) -> Bool {
+        guard confirmUnencrypted(profile) else { return false }
+        let controller = SessionController(profile: profile, settings: settings, origin: origin)
         let hosting = NSHostingController(rootView: SessionView(controller: controller))
         hosting.sceneBridgingOptions = [.toolbars, .title]
         let window = NSWindow(contentViewController: hosting)
@@ -107,9 +143,9 @@ final class SessionWindowManager: NSObject, NSWindowDelegate {
 
         window.makeKeyAndOrderFront(nil)
         NSApp.activate()
-        WelcomeWindow.shared.close()
         controller.start()
         if profile.fullscreen { window.toggleFullScreen(nil) }
+        return true
     }
 
     /// Puts a new session for the same VM into an existing window (reconnect, M8); the
@@ -119,7 +155,8 @@ final class SessionWindowManager: NSObject, NSWindowDelegate {
         let window = entry.window
         old.stop()
         windows.removeValue(forKey: old.id)
-        let controller = SessionController(profile: profile, reconnect: context)
+        let controller = SessionController(profile: profile, settings: old.sessionSettings, reconnect: context,
+                                           origin: old.origin)
         let hosting = NSHostingController(rootView: SessionView(controller: controller))
         hosting.sceneBridgingOptions = [.toolbars, .title]
         let frame = window.frame
