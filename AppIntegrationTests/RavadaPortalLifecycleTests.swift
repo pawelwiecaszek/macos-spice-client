@@ -157,6 +157,24 @@ struct RavadaPortalLifecycleTests {
         model.webView(model.webView, didFinish: current)
         #expect(!model.isLoading)
     }
+
+    @Test func backgroundDuplicateIsIgnoredWithoutFalseErrorAndExplicitViewStillWorks() throws {
+        let model = RavadaPortalModel(portalURL: try makeURL(), dataStore: .nonPersistent())
+        defer { model.stop() }
+        let page = try #require(model.webView.loadHTMLString("<html></html>", baseURL: nil))
+        model.webView(model.webView, didStartProvisionalNavigation: page)
+        model.webView(model.webView, didCommit: page)
+        let firstView = model.acceptConnectionOffer(isUserInitiated: true)
+        let lateAutomatic = model.acceptConnectionOffer(isUserInitiated: false)
+        #expect(firstView)
+        #expect(!lateAutomatic)
+        #expect(model.launchNotice != nil)
+        #expect(model.failure == nil)
+        #expect(model.diagnostics.summary.contains("automaticLaunchesBlocked: 1"))
+        let deliberateReconnect = model.acceptConnectionOffer(isUserInitiated: true)
+        #expect(deliberateReconnect)
+        #expect(model.launchNotice == nil)
+    }
 }
 
 private actor ReadGate {

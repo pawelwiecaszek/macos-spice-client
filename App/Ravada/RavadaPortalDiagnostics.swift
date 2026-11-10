@@ -5,6 +5,7 @@ struct RavadaPortalDiagnostics {
     enum Event: String, CaseIterable {
         case pageLoads, signInPages, downloadsStarted, filesValidated, sessionsOpened
         case userCancellations, ignoredNavigationCancellations, rejectedDownloads, failures
+        case automaticLaunchesBlocked
     }
 
     private var counts: [Event: Int] = [:]

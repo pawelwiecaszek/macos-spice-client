@@ -95,6 +95,12 @@ private struct BrowserContent: View {
                         .padding(8)
                         .frame(maxWidth: .infinity)
                         .background(.bar)
+                } else if let notice = model.launchNotice {
+                    Text(notice)
+                        .font(.callout)
+                        .padding(8)
+                        .frame(maxWidth: .infinity)
+                        .background(.bar)
                 }
             }
             .toolbar {

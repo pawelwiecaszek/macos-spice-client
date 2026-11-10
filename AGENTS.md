@@ -275,6 +275,11 @@ Goal: pick an `.iso` on the Mac and have it appear in the guest as a CD/DVD driv
   without replaying a machine action. Stop invalidates pending downloads and parsing;
   late navigation callbacks must not overwrite a newer load's state. Portal diagnostics
   are bounded in-memory counters and fixed failure categories only, copied on request.
+- Each rendered portal document may offer one initial automatic connection. Any accepted
+  handoff, including a manual View download, consumes that allowance. Later downloads
+  require `WKDownload.isUserInitiated`; blocked automatic offers show a nonmodal notice
+  and increment `automaticLaunchesBlocked`. Do not infer user intent from mouse-button
+  numeric values or bypass the existing origin/frame checks.
 - Connection downloads must remain on the configured HTTPS origin (including port),
   preserve the browser request/session, use the existing `VVFileParser`, and be bounded
   to 1 MiB with a timeout. Clean up app-owned temporary files. Portal TLS uses macOS

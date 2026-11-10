@@ -15,6 +15,7 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
     var isLoading = false
     var isDownloading = false
     private(set) var requiresSignIn = false
+    private(set) var launchNotice: String?
     var failure: RavadaPortalFailure?
     private(set) var diagnostics = RavadaPortalDiagnostics()
 
@@ -32,6 +33,7 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
     @ObservationIgnored private var stopped = false
     @ObservationIgnored private var currentNavigation: WKNavigation?
     @ObservationIgnored private var cancelledNavigations: [WKNavigation] = []
+    @ObservationIgnored private var launchGate = RavadaPortalLaunchGate()
 
     nonisolated static let maxConnectionFileBytes = 1024 * 1024
 
@@ -174,6 +176,14 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
         updateNavigation()
     }
 
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        guard !stopped, navigation === currentNavigation else { return }
+        // A newly rendered portal page may auto-launch once after Start finishes.
+        // Download conversions do not commit a new document, so they cannot rearm it.
+        launchGate.beganDocument()
+        launchNotice = nil
+    }
+
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: any Error) {
         navigationFailed(error, navigation: navigation)
     }
@@ -218,7 +228,17 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
 
     private func begin(_ download: WKDownload, conversion: AnyObject) {
         guard consumeDownloadConversion(conversion), !stopped, !isDownloading,
+              download.originatingFrame.isMainFrame,
               RavadaPortalConfiguration.sameOrigin(download.originalRequest?.url, as: portalURL) else {
+            download.cancel(nil)
+            return
+        }
+        // Ravada v2.4.6's machine_info callback may auto-download after a manual
+        // View has already succeeded. Its manual anchor does not set redirected_display.
+        // Reference: UPC/ravada@9e1dd6b, public/js/ravada.js:1749-1757 and
+        // templates/main/machine_displays.html.ep:64-71. Keep the first automatic
+        // handoff, but require WebKit's user-gesture flag for any subsequent one.
+        guard acceptConnectionOffer(isUserInitiated: download.isUserInitiated) else {
             download.cancel(nil)
             return
         }
@@ -229,6 +249,16 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
         activeDownload = download
         download.delegate = self
         monitorDownload(download)
+    }
+
+    func acceptConnectionOffer(isUserInitiated: Bool) -> Bool {
+        guard launchGate.accept(isUserInitiated: isUserInitiated) else {
+            diagnostics.record(.automaticLaunchesBlocked)
+            launchNotice = String(localized: "An extra automatic connection was ignored. Click View in the portal if you want to reconnect.")
+            return false
+        }
+        launchNotice = nil
+        return true
     }
 
     func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
@@ -334,6 +364,7 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
     private func cancelDownload() {
         // Invalidates an already completed download that is still being parsed.
         generation = UUID()
+        launchGate.invalidate()
         approvedConversions.removeAll()
         monitor?.cancel()
         monitor = nil

@@ -136,6 +136,11 @@ errors. Recovery returns to the configured portal so you can choose a machine ag
 it does not automatically resubmit the previous action. **Stop** cancels the current
 page load or connection download, including a file still being processed.
 
+The portal allows its initial automatic connection after a desktop starts. Once a
+connection has been handed off, additional background offers from that page are
+ignored. Clicking **View** explicitly still opens a connection. This prevents a
+delayed Ravada automatic download from unexpectedly replacing a working viewer.
+
 Use the portal toolbar’s **Diagnostics › Copy Portal Diagnostics** to copy a support
 summary. It contains bounded in-memory counters and fixed error categories, without
 portal addresses, usernames, passwords, cookies, tickets, or guest contents.
