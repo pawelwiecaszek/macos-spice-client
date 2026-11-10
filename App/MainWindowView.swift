@@ -14,6 +14,10 @@ struct MainWindowView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 case .portal:
                     RavadaPortalView(model: navigation.model, profileID: navigation.displayedProfile?.id)
+                case .desktops:
+                    if let store = navigation.desktopStore {
+                        RavadaDesktopListView(store: store, openPortal: { navigation.showPortal(profileID: navigation.displayedProfile?.id) })
+                    }
                 case .portals:
                     RavadaSettingsView()
                         .frame(maxWidth: 800)
@@ -42,6 +46,10 @@ struct MainWindowView: View {
                 }
                     .accessibilityIdentifier("returnToPortal")
             }
+            if navigation.page == .portal {
+                Button("My Desktops", systemImage: "desktopcomputer") { navigation.showDesktops() }
+                    .accessibilityIdentifier("showRavadaDesktops")
+            }
             if navigation.page != .portals {
                 Button("Manage Portals", systemImage: "globe.badge.gearshape") { navigation.showPortals() }
                     .accessibilityIdentifier("showPortalProfiles")
@@ -59,6 +67,7 @@ struct MainWindowView: View {
         case .home: String(localized: "Connections")
         case .portal: String(localized: "Ravada Portal")
         case .portals: String(localized: "Saved Portals")
+        case .desktops: String(localized: "My Desktops")
         case .proxmox: String(localized: "Virtual Machines")
         case .settings: String(localized: "Settings")
         }

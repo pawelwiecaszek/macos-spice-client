@@ -2,7 +2,7 @@ import Foundation
 import SpiceKit
 import WebKit
 
-/// Reads a fixed broker endpoint inside WebKit's isolated client world. Cookies,
+/// Executes release-verified broker requests inside WebKit's isolated client world. Cookies,
 /// including HttpOnly session cookies, stay in the profile's WebKit data store.
 @MainActor
 final class RavadaBrowserTransport {
@@ -25,6 +25,12 @@ final class RavadaBrowserTransport {
     }
 
     func catalog() async throws -> RavadaCatalog {
+        let response = try await request(.catalog)
+        return try RavadaCatalog.decode(response.data, status: response.status, contentType: response.contentType)
+    }
+
+    func request(_ request: RavadaBrokerRequest) async throws -> RavadaBrokerResponse {
+        let requestURL = try request.url(using: endpoint)
         guard activeID == nil else { throw RavadaBrokerError.unavailable }
         guard let page = pageURL(), endpoint.contains(page) else { throw RavadaBrokerError.signInRequired }
         let id = UUID().uuidString
@@ -34,29 +40,29 @@ final class RavadaBrowserTransport {
             let value: Any
             do {
                 value = try await evaluate(Self.readScript, [
-                    "requestID": id, "endpointURL": endpoint.catalogURL.absoluteString,
+                    "requestID": id, "endpointURL": requestURL.absoluteString,
                     "byteLimit": RavadaCatalog.maxResponseBytes, "timeoutMS": 15000
                 ])
             } catch {
                 guard activeID == id, !Task.isCancelled else { throw RavadaBrokerError.cancelled }
-                throw RavadaBrokerError.unavailable
+                throw request.isMutation ? RavadaBrokerError.ambiguousStart : .unavailable
             }
             guard activeID == id, !Task.isCancelled, pageURL() == page else { throw RavadaBrokerError.cancelled }
             guard let response = value as? [String: Any] else { throw RavadaBrokerError.invalidResponse }
             if let failure = response["failure"] as? String {
                 switch failure {
-                case "timeout": throw RavadaBrokerError.timedOut
+                case "timeout": throw request.isMutation ? RavadaBrokerError.ambiguousStart : .timedOut
                 case "size": throw RavadaBrokerError.responseTooLarge
                 case "origin": throw RavadaBrokerError.redirectRejected
-                default: throw RavadaBrokerError.unavailable
+                default: throw request.isMutation ? RavadaBrokerError.ambiguousStart : .unavailable
                 }
             }
             guard let status = response["status"] as? Int,
                   let urlText = response["url"] as? String, let url = URL(string: urlText),
                   let contentType = response["contentType"] as? String,
                   let body = response["body"] as? String else { throw RavadaBrokerError.invalidResponse }
-            guard url == endpoint.catalogURL else { throw RavadaBrokerError.redirectRejected }
-            return try RavadaCatalog.decode(Data(body.utf8), status: status, contentType: contentType)
+            guard url == requestURL else { throw RavadaBrokerError.redirectRejected }
+            return RavadaBrokerResponse(data: Data(body.utf8), status: status, contentType: contentType)
         } onCancel: {
             Task { @MainActor [weak self] in self?.cancel(requestID: id) }
         }
@@ -81,7 +87,7 @@ final class RavadaBrowserTransport {
         """
 
     // fetch runs in defaultClient, not the portal's JavaScript world. The only URL
-    // argument is built by RavadaEndpoint. redirect:error refuses even same-origin
+    // argument is built by RavadaBrokerRequest/RavadaEndpoint. redirect:error refuses even same-origin
     // login redirects before any second request; no credentials leave this origin.
     static let readScript = """
         const endpoint = new URL(endpointURL);

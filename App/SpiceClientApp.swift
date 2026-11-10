@@ -20,6 +20,7 @@ struct SpiceClientApp: App {
                     .keyboardShortcut("o")
                 Button("Virtual Machines…") { MainWindowController.shared.showProxmox() }
                     .keyboardShortcut("0")
+                Button("My Ravada Desktops…") { MainWindowController.shared.showDesktops() }
                 Button("Open Ravada Portal…") { MainWindowController.shared.showPortal() }
                 Menu("Saved Ravada Portals") { RavadaPortalMenuContent() }
             }

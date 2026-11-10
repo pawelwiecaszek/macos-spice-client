@@ -96,7 +96,7 @@ public struct RavadaCatalog: Equatable, Sendable {
     }
 }
 
-private extension KeyedDecodingContainer {
+extension KeyedDecodingContainer {
     // Perl's false can serialize as an empty string. Unknown policy stays nil.
     func flag(_ key: Key) -> Bool? {
         if let value = try? decode(Bool.self, forKey: key) { return value }

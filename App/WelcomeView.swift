@@ -25,6 +25,9 @@ struct WelcomeView: View {
                 .keyboardShortcut(.defaultAction)
             Button("Proxmox Virtual Machines…") { MainWindowController.shared.showProxmox() }
                 .controlSize(.large)
+            Button("My Ravada Desktops…") { MainWindowController.shared.showDesktops() }
+                .controlSize(.large)
+                .accessibilityIdentifier("openRavadaDesktops")
             Button("Open Ravada Portal…") { MainWindowController.shared.showPortal() }
                 .controlSize(.large)
             if !portals.favorites.isEmpty {
@@ -40,7 +43,7 @@ struct WelcomeView: View {
                 .foregroundStyle(.tertiary)
         }
         .padding(40)
-        .frame(width: 520, height: portals.favorites.isEmpty ? 420 : 470)
+        .frame(width: 520, height: portals.favorites.isEmpty ? 470 : 520)
         .background(isTargeted ? Color.accentColor.opacity(0.08) : .clear)
         .dropDestination(for: URL.self) { urls, _ in
             let files = urls.filter { $0.pathExtension.lowercased() == "vv" }

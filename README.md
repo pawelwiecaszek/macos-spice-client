@@ -123,6 +123,24 @@ the token itself, not only to its user.
 
 ## Using it with Ravada
 
+**My Ravada Desktops…** opens the native catalog. On first use, sign in through the
+portal, then choose **My Desktops**. Search desktops, mark machine favorites and
+Connect to an authorized clone or standalone machine. Favorites are scoped to the saved
+portal profile/address and contain machine IDs only, never tickets or connection files.
+
+Connect rechecks catalog access and permitted machine metadata. For a stopped desktop
+it submits one Start, follows its matching successful request, waits for readiness,
+and fetches fresh SPICE details. Repeated clicks while connecting are ignored. Start
+is a non-idempotent GET in Ravada 2.4.6 and is not retried by the client after an
+ambiguous outcome. Cancel stops the client; a submitted server Start may continue.
+Leaving, closing, minimizing or hiding the page/app cancels pending work. Unhiding
+refreshes the catalog and never replays Start. Catalog refresh is manual otherwise.
+
+Templates needing cloning, locked/unknown states, hibernated machines and accounts
+without permitted display discovery use **Open in Portal**. Advertised TLS is preferred;
+incomplete TLS metadata never falls back to plain SPICE. If only plain SPICE is
+advertised, the existing unencrypted-connection confirmation still applies.
+
 1. Save a named HTTPS portal under **Connections › Manage Portals**. An existing portal address
    and browser login are imported automatically.
 2. Choose **Open Ravada Portal…** from Connections or the File menu.
@@ -161,7 +179,7 @@ resolution, the Command key, clipboard sharing, and audio playback. Overrides ap
 to new VDI sessions and are retained on reconnect; they do not change General settings.
 
 **Clear Portal Login** removes that profile’s saved browser data. Certificates must be trusted by macOS; downloading a
-connection file never changes portal certificate trust. Ravada API power controls and
+connection file never changes portal certificate trust. Standalone Ravada power controls and
 automatic ticket renewal are not provided; reopen the portal for a fresh connection.
 
 **Diagnostics › Check Desktop Access** performs one authenticated user-catalog read
@@ -169,8 +187,7 @@ using the current portal browser login. It shows an access result and entry coun
 continue using the portal to launch a desktop. The check follows no redirects, exports
 no cookies and stops on navigation, Stop or leaving the portal. Ravada 2.4.6 may enqueue
 its normal desktop-preview refresh while serving this catalog; the client does not
-fetch those images or issue start/stop/clone actions. Native desktop browsing and
-fresh-ticket reconnect remain later features.
+fetch those images or issue start/stop/clone actions. Fresh-ticket reconnect remains a later feature.
 
 The portal workflow was informed by [spice-mac](https://github.com/BeriBeli/spice-mac).
 This app continues to use its own Swift SPICE implementation and Metal renderer.

@@ -148,4 +148,34 @@ final class SpiceClientUITests: XCTestCase {
         add(screenshot)
     }
 
+    @MainActor
+    func testNativeDesktopsSearchFavoritesAndPortalFallbackShareOneWindow() throws {
+        let app = makeApp()
+        app.launchEnvironment["SPICE_RAVADA_DESKTOP_FIXTURE"] = "1"
+        app.launchArguments = ["-ravadaPortalURL", "https://portal.example.invalid/"]
+        app.launch()
+        app.buttons["openRavadaDesktops"].click()
+        XCTAssertTrue(app.staticTexts["Example Running"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Example Stopped"].exists)
+        XCTAssertTrue(app.staticTexts["Template Requiring Portal"].exists)
+        XCTAssertFalse(app.buttons["connectRavadaDesktop-20"].exists)
+        XCTAssertEqual(app.windows.count, 1)
+        let screenshot = XCTAttachment(screenshot: app.windows["connectionsWindow"].screenshot())
+        screenshot.name = "Native My Desktops"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        let search = app.textFields["ravadaDesktopSearch"]
+        search.click(); search.typeText("Running")
+        XCTAssertTrue(app.staticTexts["Example Running"].exists)
+        XCTAssertFalse(app.staticTexts["Example Stopped"].exists)
+        app.buttons["ravadaDesktopFavorite-42"].click()
+        search.click(); search.typeKey("a", modifierFlags: .command); search.typeKey(.delete, modifierFlags: [])
+        app.descendants(matching: .any)["ravadaDesktopFavoritesOnly"].firstMatch.click()
+        XCTAssertTrue(app.staticTexts["Example Running"].exists)
+        XCTAssertFalse(app.staticTexts["Example Stopped"].exists)
+        app.buttons["showConnectionsHome"].click()
+        XCTAssertTrue(app.buttons["Open Connection File…"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.windows.count, 1)
+    }
+
 }

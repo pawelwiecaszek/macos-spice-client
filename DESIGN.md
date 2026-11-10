@@ -3,7 +3,7 @@
 ## Source of truth
 Active, 2026-11-10. Native macOS 26+ app: one main navigation window and independent VDI windows.
 Evidence: AGENTS.md §§2, 7e, 8; App/WelcomeView.swift; App/Ravada; current UI tests.
-No existing DESIGN.md or separate design tokens were present. Phase 2 is local-only.
+Use native system controls; no separate design-token layer. Phases 1–3 are accepted; Phase 4 is under local validation.
 
 ## Brand
 Native, restrained, clear. Use system controls and visible connection state. Avoid
@@ -13,7 +13,8 @@ custom chrome, web-style dashboards in Settings, and decorative guest-display ov
 Save named Ravada portal profiles, favorite frequent connections, and apply optional
 per-portal session preferences. Preserve Proxmox/manual files and the current login.
 Success: migration loses no address/login; profile switching leaves running VDI sessions alone.
-Non-goals: native desktop catalog, machine favorites, broker API, credential entry outside WebKit.
+Phase 4 adds a native desktop catalog, per-profile machine favorites and guarded Connect.
+Non-goals: server administration, forced power actions, native password entry or automatic cloning.
 
 ## Personas and jobs
 A macOS VDI user connects to one or more Ravada portals, remembers preferred sharing
@@ -21,7 +22,7 @@ and display settings, and uses LDAP credentials only in the portal's login page.
 
 ## Information architecture
 One main navigation window contains Connections, Ravada portal, saved profiles,
-Proxmox VM browsing and Settings. VDI windows remain separate. Welcome keeps Open File,
+My Desktops, Proxmox VM browsing and Settings. VDI windows remain separate. Welcome keeps Open File,
 Proxmox and Open Ravada; favorites offer direct portal launch.
 Settings > Ravada contains a saved-profile picker, New, editable name/HTTPS address,
 favorite flag, session overrides, Save/Open, Remove and Clear Portal Login.
@@ -77,7 +78,7 @@ Require automated migration/isolation/preference tests and UI screenshots before
 
 ## Open questions
 - [x] Phase 2 profile/login/preference/navigation acceptance confirmed by user.
-- [ ] Machine-level favorites await the later native desktop catalog (owner: future phase).
+- [ ] Phase 4 native catalog and Connect require live Ravada acceptance (owner: user).
 
 ## Phase 3 broker access check
 
@@ -87,3 +88,20 @@ Loading shares the existing progress/Stop controls. Duplicate checks are disable
 navigating, leaving the portal or closing cancels the check and suppresses late results.
 Mention Ravada's possible server preview refresh in the menu. No desktop rows, machine
 actions, automatic refresh or fresh-ticket reconnect belong to this phase.
+
+## Phase 4 native My Desktops
+
+My Desktops is a page in the existing main window, alongside the retained Ravada
+Portal. Use native List rows with a desktop name, plain-language state, a labeled
+favorite toggle and Connect or Open in Portal. Search matches visible labels; a
+Favorites-only toggle filters per-profile machine IDs. Do not download thumbnails.
+On first use, establish authentication through the portal, then return to My Desktops.
+The selected saved profile is always visible; switching it never closes active VDIs.
+
+Show loading, empty catalog, no search results, sign-in/access failure, job progress
+and cancellation states in the page. Disable duplicate Connect and Refresh during a
+Connect. Stop cancels client work and explains that an already-submitted server start
+may continue. A base requiring provisioning, unknown state/permissions or unsupported
+display discovery offers Open in Portal. Never infer readiness from successful HTTP
+alone. Keep search/favorite/Connect keyboard accessible and labels readable at narrow
+window widths. Manual refresh only; job polling stops when leaving the page.

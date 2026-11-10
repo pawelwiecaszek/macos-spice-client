@@ -1,5 +1,6 @@
 import AppKit
 import Observation
+import SpiceKit
 import SwiftUI
 import WebKit
 
@@ -7,12 +8,13 @@ import WebKit
 @MainActor
 @Observable
 final class MainWindowController: NSObject, NSWindowDelegate {
-    enum Page { case home, portal, portals, proxmox, settings }
+    enum Page { case home, portal, portals, desktops, proxmox, settings }
     static let shared = MainWindowController()
     @ObservationIgnored private(set) var window: NSWindow?
     private(set) var page: Page = .home
     private(set) var model: RavadaPortalModel?
     private(set) var displayedProfile: RavadaPortalProfile?
+    private(set) var desktopStore: RavadaDesktopStore?
     @ObservationIgnored private let portals: RavadaPortalStore
 
     init(portals: RavadaPortalStore = .shared) {
@@ -32,11 +34,14 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     func showCurrentPage() { present() }
 
     func showPortal(profileID: UUID? = nil) {
+        if page == .desktops { desktopStore?.deactivate() }
         if let profileID {
             do { try portals.select(profileID) } catch { return }
         }
         let profile = portals.selectedProfile
         if model == nil || displayedProfile != profile {
+            desktopStore?.deactivate()
+            desktopStore = nil
             model?.stop()
             if let profile, let url = profile.url {
                 model = RavadaPortalModel(
@@ -57,12 +62,60 @@ final class MainWindowController: NSObject, NSWindowDelegate {
             model?.load()
         }
         model?.resume()
+        if model?.hasCommittedDocument == false && model?.isLoading == false && model?.webView.isLoading == false { model?.load() }
         page = .portal
         present()
     }
 
+    func showDesktops() {
+        guard let profile = portals.selectedProfile else { showPortals(); return }
+        #if DEBUG
+        if let fixture = RavadaDesktopFixture.store(profile: profile, defaults: portals.defaults) {
+            desktopStore?.deactivate()
+            desktopStore = fixture
+            displayedProfile = profile
+            navigate(to: .desktops)
+            fixture.activate()
+            return
+        }
+        #endif
+        guard let model, displayedProfile == profile, model.hasCommittedDocument, !model.isLoading, model.webView.url != nil else {
+            // Establish an authenticated main-frame document before using its cookie context.
+            showPortal(profileID: profile.id)
+            return
+        }
+        if desktopStore == nil {
+            do {
+                let reader = try RavadaBrowserTransport(portalURL: model.portalURL, webView: model.webView)
+                desktopStore = RavadaDesktopStore(profile: profile, defaults: portals.defaults,
+                    request: { [weak self] request in
+                        guard self?.canUseDesktopProfile(profile) == true else { throw RavadaBrokerError.cancelled }
+                        let response = try await reader.request(request)
+                        guard self?.canUseDesktopProfile(profile) == true else { throw RavadaBrokerError.cancelled }
+                        return response
+                    }, cancel: { reader.cancel() }, open: { [weak self] connection, machineID in
+                        guard self?.canUseDesktopProfile(profile) == true,
+                              let current = self?.portals.selectedProfile else { return false }
+                        return SessionWindowManager.shared.openSession(connection,
+                            settings: AppSettings.shared.applying(current.preferences),
+                            origin: .ravada(profileID: profile.id, machineID: machineID))
+                    })
+            } catch { showPortal(profileID: profile.id); return }
+        }
+        navigate(to: .desktops)
+        desktopStore?.activate()
+    }
+
+    private func canUseDesktopProfile(_ profile: RavadaPortalProfile) -> Bool {
+        guard page == .desktops, displayedProfile?.id == profile.id,
+              let current = portals.selectedProfile else { return false }
+        return current.id == profile.id && current.address == profile.address
+            && current.websiteDataStoreID == profile.websiteDataStoreID
+    }
+
     private func navigate(to page: Page) {
         if self.page == .portal && page != .portal { model?.pause() }
+        if self.page == .desktops && page != .desktops { desktopStore?.deactivate() }
         self.page = page
         present()
     }
@@ -88,6 +141,8 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        desktopStore?.deactivate()
+        desktopStore = nil
         model?.stop()
         model = nil
         displayedProfile = nil
@@ -95,7 +150,13 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         window = nil
     }
 
+    func windowDidMiniaturize(_ notification: Notification) { desktopStore?.deactivate() }
+    func windowDidDeminiaturize(_ notification: Notification) {
+        if page == .desktops { desktopStore?.activate() }
+    }
+
     func close() {
+        desktopStore?.deactivate()
         model?.stop()
         window?.close()
     }
@@ -112,6 +173,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     }
 
     func updated(from old: RavadaPortalProfile, to profile: RavadaPortalProfile) {
+        if displayedProfile?.id == old.id { desktopStore?.deactivate(); desktopStore = nil }
         if old.address != profile.address || old.websiteDataStoreID != profile.websiteDataStoreID {
             clearPortalIfDisplaying(old.id)
         } else if displayedProfile?.id == old.id {
@@ -122,10 +184,12 @@ final class MainWindowController: NSObject, NSWindowDelegate {
 
     private func clearPortalIfDisplaying(_ id: UUID) {
         guard displayedProfile?.id == id else { return }
+        desktopStore?.deactivate()
+        desktopStore = nil
         model?.stop()
         model = nil
         displayedProfile = nil
-        if page == .portal { navigate(to: .portals) }
+        if page == .portal || page == .desktops { navigate(to: .portals) }
     }
 
     private func eraseBrowserData(_ id: UUID) {

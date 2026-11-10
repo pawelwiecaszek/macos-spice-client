@@ -16,6 +16,7 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
     var isLoading = false
     var isDownloading = false
     private(set) var requiresSignIn = false
+    private(set) var hasCommittedDocument = false
     private(set) var launchNotice: String?
     var failure: RavadaPortalFailure?
     private(set) var diagnostics = RavadaPortalDiagnostics()
@@ -203,6 +204,7 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
         guard !stopped, isPresented, navigation === currentNavigation else { return }
         // A newly rendered portal page may auto-launch once after Start finishes.
         // Download conversions do not commit a new document, so they cannot rearm it.
+        hasCommittedDocument = true
         launchGate.beganDocument()
         launchNotice = nil
     }
