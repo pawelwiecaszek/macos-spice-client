@@ -36,9 +36,10 @@ struct MainWindowView: View {
                 Button("Connections", systemImage: "house") { navigation.showHome() }
                     .accessibilityIdentifier("showConnectionsHome")
             }
-            if navigation.page != .portal, navigation.model != nil,
-               let id = navigation.displayedProfile?.id {
-                Button("Back to Portal", systemImage: "arrow.backward") { navigation.showPortal(profileID: id) }
+            if navigation.page != .portal {
+                Button("Ravada Portal", systemImage: "globe") {
+                    navigation.showPortal(profileID: navigation.displayedProfile?.id)
+                }
                     .accessibilityIdentifier("returnToPortal")
             }
             if navigation.page != .portals {

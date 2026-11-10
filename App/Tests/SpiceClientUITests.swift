@@ -119,6 +119,7 @@ final class SpiceClientUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["Open Connection File…"].waitForExistence(timeout: 10))
         XCTAssertEqual(app.windows.count, 1)
+        XCTAssertTrue(app.buttons["returnToPortal"].exists)
         app.buttons["showPortalProfiles"].click()
         let name = app.textFields["ravadaPortalNameField"]
         XCTAssertTrue(name.waitForExistence(timeout: 10))
@@ -130,6 +131,7 @@ final class SpiceClientUITests: XCTestCase {
         XCTAssertEqual(app.windows.count, 1)
         app.typeKey(",", modifierFlags: .command)
         XCTAssertTrue(app.descendants(matching: .any)["General"].firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["returnToPortal"].isHittable)
         XCTAssertEqual(app.windows.count, 1)
         app.buttons["showConnectionsHome"].click()
         XCTAssertTrue(app.buttons["Open Connection File…"].waitForExistence(timeout: 10))

@@ -26,7 +26,8 @@ Proxmox and Open Ravada; favorites offer direct portal launch.
 Settings > Ravada contains a saved-profile picker, New, editable name/HTTPS address,
 favorite flag, session overrides, Save/Open, Remove and Clear Portal Login.
 The portal toolbar offers saved-profile switching and Connections/Home. Profile editing
-can return to the retained portal. Cmd+, and each VDI Connections button bring the
+can return to the retained portal. A Ravada Portal navigation button is available
+on every other page, even before a browser session has been opened. Cmd+, and each VDI Connections button bring the
 existing main window forward; focusing it must preserve unsaved drafts. VDI windows
 remain independent of portal selection, removal and closing the main window.
 
