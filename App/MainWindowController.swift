@@ -41,13 +41,14 @@ final class MainWindowController: NSObject, NSWindowDelegate {
             if let profile, let url = profile.url {
                 model = RavadaPortalModel(
                     portalURL: url, dataStore: WKWebsiteDataStore(forIdentifier: profile.websiteDataStoreID),
-                    openConnection: { [weak self, portals] connection in
+                    openConnectionWithIdentity: { [weak self, portals] connection, machineID in
                         guard self?.page == .portal, self?.displayedProfile?.id == profile.id,
                               let current = portals.profiles.first(where: { $0.id == profile.id }),
                               current.address == profile.address,
                               current.websiteDataStoreID == profile.websiteDataStoreID else { return false }
                         let settings = AppSettings.shared.applying(current.preferences)
-                        return SessionWindowManager.shared.openSession(connection, settings: settings)
+                        return SessionWindowManager.shared.openSession(connection, settings: settings,
+                            origin: .ravada(profileID: profile.id, machineID: machineID))
                     })
             } else {
                 model = nil

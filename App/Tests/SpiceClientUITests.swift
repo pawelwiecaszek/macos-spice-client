@@ -66,6 +66,12 @@ final class SpiceClientUITests: XCTestCase {
         XCTAssertTrue(app.buttons["stopPortalAction"].exists)
         let diagnostics = app.descendants(matching: .any)["portalDiagnosticsMenu"].firstMatch
         XCTAssertTrue(diagnostics.exists)
+        diagnostics.click()
+        let checkAccess = app.menuItems["Check Desktop Access"]
+        XCTAssertTrue(checkAccess.waitForExistence(timeout: 5))
+        checkAccess.click()
+        XCTAssertTrue(app.staticTexts["ravadaCatalogCheckSummary"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.windows.count, 1)
         let screenshot = XCTAttachment(screenshot: app.windows["connectionsWindow"].screenshot())
         screenshot.name = "Portal recovery controls"
         screenshot.lifetime = .keepAlways

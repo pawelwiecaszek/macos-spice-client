@@ -76,5 +76,14 @@ the initial profile; new profiles get independent browser stores, including same
 Require automated migration/isolation/preference tests and UI screenshots before local acceptance.
 
 ## Open questions
-- [ ] User live acceptance of adding/switching profiles and preference inheritance (owner: user).
+- [x] Phase 2 profile/login/preference/navigation acceptance confirmed by user.
 - [ ] Machine-level favorites await the later native desktop catalog (owner: future phase).
+
+## Phase 3 broker access check
+
+Portal Diagnostics offers an explicit Check Desktop Access action. Show a bounded
+entry count on success or a fixed actionable error in the portal's bottom status area.
+Loading shares the existing progress/Stop controls. Duplicate checks are disabled;
+navigating, leaving the portal or closing cancels the check and suppresses late results.
+Mention Ravada's possible server preview refresh in the menu. No desktop rows, machine
+actions, automatic refresh or fresh-ticket reconnect belong to this phase.

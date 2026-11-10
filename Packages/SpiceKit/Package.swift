@@ -35,6 +35,7 @@ let package = Package(
         .target(name: "USBHost", dependencies: ["USBRedirWire"], swiftSettings: strictSettings),
         .target(name: "USBEmulation", dependencies: ["USBRedirWire"], swiftSettings: strictSettings),
         .target(name: "AudioHost", swiftSettings: strictSettings),
+        .target(name: "Ravada", swiftSettings: strictSettings),
         .target(name: "Proxmox", dependencies: ["SpiceTransport", "VVFile"], swiftSettings: strictSettings),
         .target(name: "SmartcardHost", dependencies: ["SpiceChannels", "USBEmulation"], swiftSettings: strictSettings),
 
@@ -43,7 +44,7 @@ let package = Package(
             name: "SpiceKit",
             dependencies: [
                 "VVFile", "SpiceWire", "SpiceCodecs", "SpiceTransport",
-                "SpiceChannels", "SpiceAgent", "USBRedirWire", "USBEmulation", "USBHost", "SmartcardHost", "Proxmox", "AudioHost",
+                "SpiceChannels", "SpiceAgent", "USBRedirWire", "USBEmulation", "USBHost", "SmartcardHost", "Proxmox", "Ravada", "AudioHost",
             ],
             swiftSettings: strictSettings
         ),
@@ -56,6 +57,7 @@ let package = Package(
         .testTarget(name: "SpiceCodecsTests", dependencies: ["SpiceCodecs", "SpiceWire"]),
         .testTarget(name: "SpiceTransportTests", dependencies: ["SpiceTransport", "SpiceWire"]),
         .testTarget(name: "SpiceKitTests", dependencies: ["SpiceKit"]),
+        .testTarget(name: "RavadaTests", dependencies: ["Ravada"]),
         .testTarget(name: "ProxmoxTests", dependencies: ["Proxmox", "VVFile"]),
         .testTarget(name: "AudioHostTests", dependencies: ["AudioHost"]),
         .testTarget(

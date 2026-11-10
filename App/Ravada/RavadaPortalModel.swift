@@ -10,6 +10,7 @@ import WebKit
 final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
     let portalURL: URL
     let webView: WKWebView
+    let catalogCheck: RavadaCatalogCheck
     var canGoBack = false
     var canGoForward = false
     var isLoading = false
@@ -24,10 +25,11 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
     private var approvedConversions: Set<ObjectIdentifier> = []
 
     @ObservationIgnored private let readFile: @Sendable (URL) async -> Result<ConnectionProfile, any Error>
-    @ObservationIgnored private let openConnection: @MainActor (ConnectionProfile) -> Bool
+    @ObservationIgnored private let openConnection: @MainActor (ConnectionProfile, Int?) -> Bool
 
     @ObservationIgnored private var activeDownload: WKDownload?
     @ObservationIgnored private var destination: URL?
+    @ObservationIgnored private var downloadMachineID: Int?
     @ObservationIgnored private var monitor: Task<Void, Never>?
     @ObservationIgnored private var generation = UUID()
     @ObservationIgnored private var stopped = false
@@ -40,13 +42,21 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
 
     init(portalURL: URL, dataStore: WKWebsiteDataStore? = nil,
          readFile: (@Sendable (URL) async -> Result<ConnectionProfile, any Error>)? = nil,
-         openConnection: (@MainActor (ConnectionProfile) -> Bool)? = nil) {
+         openConnection: (@MainActor (ConnectionProfile) -> Bool)? = nil,
+         openConnectionWithIdentity: (@MainActor (ConnectionProfile, Int?) -> Bool)? = nil) {
         self.portalURL = portalURL
         self.readFile = readFile ?? { url in await Self.readAndRemoveConnectionFile(at: url) }
-        self.openConnection = openConnection ?? { SessionWindowManager.shared.openSession($0) }
+        self.openConnection = openConnectionWithIdentity ?? { profile, _ in
+            (openConnection ?? { SessionWindowManager.shared.openSession($0) })(profile)
+        }
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = dataStore ?? .nonPersistent()
         webView = WKWebView(frame: .zero, configuration: configuration)
+        let transport = try? RavadaBrowserTransport(portalURL: portalURL, webView: webView)
+        catalogCheck = RavadaCatalogCheck(read: {
+            guard let transport else { throw RavadaBrokerError.invalidAddress }
+            return try await transport.catalog()
+        }, cancel: { transport?.cancel() })
         super.init()
         webView.navigationDelegate = self
         webView.uiDelegate = self
@@ -64,6 +74,7 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
     }
 
     func cancelCurrentAction() {
+        catalogCheck.cancel()
         let wasBusy = isBusy
         if let currentNavigation {
             cancelledNavigations.append(currentNavigation)
@@ -175,6 +186,7 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         guard !stopped, isPresented, !cancelledNavigations.contains(where: { $0 === navigation }) else { return }
+        catalogCheck.cancel()
         currentNavigation = navigation
         failure = nil
         requiresSignIn = false
@@ -283,6 +295,7 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
             report(failure)
             return
         }
+        downloadMachineID = RavadaPortalConfiguration.machineID(displayURL: response.url, portalURL: portalURL)
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("ravada-\(UUID().uuidString).vv")
         destination = url
         completionHandler(url)
@@ -333,12 +346,14 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
         activeDownload = nil
         destination = nil
         let completedGeneration = generation
-        Task { await openDownloadedConnectionFile(at: url, expectedGeneration: completedGeneration) }
+        let machineID = downloadMachineID
+        downloadMachineID = nil
+        Task { await openDownloadedConnectionFile(at: url, expectedGeneration: completedGeneration, machineID: machineID) }
     }
 
     /// Kept separate from WebKit delivery to exercise parsing and late cancellation
     /// without making authenticated network requests in the test suite.
-    func openDownloadedConnectionFile(at url: URL, expectedGeneration: UUID? = nil) async {
+    func openDownloadedConnectionFile(at url: URL, expectedGeneration: UUID? = nil, machineID: Int? = nil) async {
         let currentGeneration = expectedGeneration ?? generation
         guard !stopped, isPresented, currentGeneration == generation else {
             await Task.detached { try? FileManager.default.removeItem(at: url) }.value
@@ -351,7 +366,7 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
         switch result {
         case .success(let profile):
             diagnostics.record(.filesValidated)
-            if openConnection(profile) { diagnostics.record(.sessionsOpened) }
+            if openConnection(profile, machineID) { diagnostics.record(.sessionsOpened) }
         case .failure(let error):
             if let failure = RavadaPortalFailure.classify(error, phase: .readingConnection) {
                 report(failure)
@@ -374,6 +389,7 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
     }
 
     private func cancelDownload() {
+        downloadMachineID = nil
         // Invalidates an already completed download that is still being parsed.
         generation = UUID()
         launchGate.invalidate()

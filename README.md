@@ -164,6 +164,14 @@ to new VDI sessions and are retained on reconnect; they do not change General se
 connection file never changes portal certificate trust. Ravada API power controls and
 automatic ticket renewal are not provided; reopen the portal for a fresh connection.
 
+**Diagnostics › Check Desktop Access** performs one authenticated user-catalog read
+using the current portal browser login. It shows an access result and entry count;
+continue using the portal to launch a desktop. The check follows no redirects, exports
+no cookies and stops on navigation, Stop or leaving the portal. Ravada 2.4.6 may enqueue
+its normal desktop-preview refresh while serving this catalog; the client does not
+fetch those images or issue start/stop/clone actions. Native desktop browsing and
+fresh-ticket reconnect remain later features.
+
 The portal workflow was informed by [spice-mac](https://github.com/BeriBeli/spice-mac).
 This app continues to use its own Swift SPICE implementation and Metal renderer.
 

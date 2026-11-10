@@ -264,6 +264,18 @@ Goal: pick an `.iso` on the Mac and have it appear in the guest as a CD/DVD driv
 
 ## 7e. Ravada portal and connection-download helper (M8)
 
+- `Ravada` package models decode the ordinary-user catalog only, preserving nested
+  clone IDs and unknown policy/state. Authentication stays in a WebKit isolated
+  client-world fixed-endpoint fetch; never export cookies or use page-world globals.
+  Catalog reads have size/time limits, no redirects, no polling, and per-request abort
+  ownership. Cancel on navigation/hide/close. The Ravada 2.4.6 catalog can enqueue
+  server thumbnail refreshes; do not describe it as entirely side-effect-free.
+- Session origin is app-owned context carried through open/replace. Explicit Ravada
+  origin prevents Proxmox inference from .vv contents. Machine identity comes only
+  from the configured-origin/base-path SPICE display response route; otherwise nil.
+  Before adding future broker actions, verify the session's portal origin/store epoch
+  still matches its saved profile; profile UUID alone must not authorize another origin.
+
 - Connections, portal browsing, saved profiles, Proxmox VM browsing and Settings share
   `MainWindowController`; VDI windows remain independent. Hidden portals reject
   navigation/download admission and late connection handoffs. Cmd+, and VDI Connections
@@ -281,8 +293,8 @@ Goal: pick an `.iso` on the Mac and have it appear in the guest as a CD/DVD driv
 - Profile preferences inherit General settings unless explicitly overridden. Overrides
   use nonpersistent session settings, never write General defaults, and survive reconnect.
 - `App/Ravada` embeds the configured HTTPS portal with WebKit; browser authentication
-  stays in a separate persistent WebKit data store for each portal origin. No native
-  Ravada API or automatic ticket-renewal contract is assumed.
+  stays in a separate persistent WebKit data store for each saved profile. Only the
+  verified user-catalog read is exposed; no machine action or ticket-renewal API is assumed.
 - Ravada console sessions start windowed regardless of a generated `fullscreen` hint;
   manually opened connection files retain their existing fullscreen behavior.
 - Ravada may render its LDAP login page as HTTP 401; allow same-origin renderable HTML

@@ -1,4 +1,5 @@
 import Foundation
+import SpiceKit
 import WebKit
 
 /// Shared validation for saved portal addresses and browser navigation.
@@ -47,6 +48,27 @@ enum RavadaPortalConfiguration {
         guard isMainFrame, canShowMIMEType, sameOrigin(response.url, as: portalURL),
               (response as? HTTPURLResponse)?.statusCode == 401 else { return false }
         return ["text/html", "application/xhtml+xml"].contains(response.mimeType?.lowercased() ?? "")
+    }
+
+    /// Identity comes only from a same-origin, base-relative display response URL.
+    /// UPC/ravada@9e1dd6b script/rvd_front:1735–1785 and machine_displays.html.ep.
+    static func machineID(displayURL: URL?, portalURL: URL) -> Int? {
+        guard let displayURL, let endpoint = try? RavadaEndpoint(portalURL: portalURL),
+              endpoint.contains(displayURL),
+              let parts = URLComponents(url: displayURL, resolvingAgainstBaseURL: false),
+              parts.query == nil, parts.fragment == nil, !parts.percentEncodedPath.contains("%") else { return nil }
+        let base = endpoint.catalogURL.deletingLastPathComponent().path
+        let prefix = (base == "/" ? "" : base) + "/machine/display/"
+        guard displayURL.path.hasPrefix(prefix) else { return nil }
+        let segments = displayURL.path.dropFirst(prefix.count).split(separator: "/", omittingEmptySubsequences: false)
+        guard segments.count == 2, ["spice", "spice-tls"].contains(String(segments[0])) else { return nil }
+        let file = String(segments[1])
+        let suffix = file.hasSuffix(".tls.vv") ? ".tls.vv" : ".vv"
+        guard file.hasSuffix(suffix) else { return nil }
+        let number = file.dropLast(suffix.count)
+        guard !number.isEmpty, number.utf8.allSatisfy({ (48...57).contains($0) }),
+              let id = Int(number), id > 0 else { return nil }
+        return id
     }
 
 }

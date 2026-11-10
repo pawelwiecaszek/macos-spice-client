@@ -36,6 +36,7 @@ final class SessionController: RemoteDisplayViewDelegate {
 
     let id = UUID()
     let profile: ConnectionProfile
+    let origin: SessionOrigin
     private(set) var phase: Phase = .connecting
     private(set) var title: String
     private(set) var clientMouseMode = true
@@ -70,13 +71,16 @@ final class SessionController: RemoteDisplayViewDelegate {
     @ObservationIgnored private var reconnectTask: Task<Void, Never>?
     @ObservationIgnored private var restoreTask: Task<Void, Never>?
 
-    init(profile: ConnectionProfile, settings: AppSettings = .shared, reconnect: ReconnectContext? = nil) {
+    init(profile: ConnectionProfile, settings: AppSettings = .shared, reconnect: ReconnectContext? = nil,
+         origin: SessionOrigin? = nil) {
         self.profile = profile
+        let resolvedOrigin = origin ?? .inferred(from: profile)
+        self.origin = resolvedOrigin
         self.settings = settings
         self.reconnect = reconnect
         reusableProfile = profile.password == nil
         self.title = profile.displayTitle
-        self.vmRef = ProxmoxVMRef(profile: profile)
+        self.vmRef = resolvedOrigin.proxmoxReference
         let session = SpiceSession(profile: profile)
         self.session = session
         self.usb = USBController(session: session, profile: profile)

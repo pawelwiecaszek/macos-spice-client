@@ -40,6 +40,11 @@ private struct BrowserContent: View {
     var body: some View {
         PortalWebView(webView: model.webView)
             .safeAreaInset(edge: .bottom) {
+                if let summary = model.catalogCheck.summary {
+                    Text(summary)
+                        .font(.callout).padding(8).frame(maxWidth: .infinity).background(.bar)
+                        .accessibilityIdentifier("ravadaCatalogCheckSummary")
+                }
                 if model.requiresSignIn {
                     Text("Sign in through the portal to continue.")
                         .font(.callout)
@@ -63,9 +68,13 @@ private struct BrowserContent: View {
                     Button("Reload Portal", systemImage: "arrow.clockwise") { model.load() }
                         .help("Return to the portal without resubmitting the previous action")
                     Button("Stop", systemImage: "xmark") { model.cancelCurrentAction() }
-                        .disabled(!model.isBusy)
+                        .disabled(!model.isBusy && !model.catalogCheck.isChecking)
                         .accessibilityIdentifier("stopPortalAction")
                     Menu("Diagnostics", systemImage: "stethoscope") {
+                        Button("Check Desktop Access") { model.catalogCheck.check() }
+                            .disabled(model.isBusy || model.catalogCheck.isChecking)
+                        Text("Ravada may refresh desktop previews while reading its catalog.")
+                        Divider()
                         Button("Copy Portal Diagnostics") {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(model.diagnostics.summary, forType: .string)
@@ -73,7 +82,7 @@ private struct BrowserContent: View {
                     }
                     .accessibilityIdentifier("portalDiagnosticsMenu")
                     .help("Copy counters and error categories without addresses or credentials")
-                    if model.isBusy {
+                    if model.isBusy || model.catalogCheck.isChecking {
                         ProgressView().controlSize(.small).accessibilityLabel("Loading portal")
                     }
                 }
