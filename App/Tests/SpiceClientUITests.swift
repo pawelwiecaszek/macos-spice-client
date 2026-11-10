@@ -21,7 +21,7 @@ final class SpiceClientUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Open Connection File…"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["Proxmox Virtual Machines…"].exists)
         XCTAssertTrue(app.buttons["Open Ravada Portal…"].exists)
-        let screenshot = XCTAttachment(screenshot: app.windows["Welcome"].screenshot())
+        let screenshot = XCTAttachment(screenshot: app.windows["connectionsWindow"].screenshot())
         screenshot.name = "Launcher with Proxmox and Ravada"
         screenshot.lifetime = .keepAlways
         add(screenshot)
@@ -36,11 +36,12 @@ final class SpiceClientUITests: XCTestCase {
         let portal = app.buttons["Open Ravada Portal…"]
         XCTAssertTrue(portal.waitForExistence(timeout: 10))
         portal.click()
-        let setup = app.buttons["Open Settings…"]
+        let setup = app.buttons["manageRavadaPortals"]
         XCTAssertTrue(setup.waitForExistence(timeout: 10))
         setup.click()
         XCTAssertTrue(app.textFields["ravadaPortalURLField"].waitForExistence(timeout: 10))
-        let screenshot = XCTAttachment(screenshot: app.windows["Ravada"].screenshot())
+        XCTAssertEqual(app.windows.count, 1)
+        let screenshot = XCTAttachment(screenshot: app.windows["connectionsWindow"].screenshot())
         screenshot.name = "Ravada portal settings"
         screenshot.lifetime = .keepAlways
         add(screenshot)
@@ -65,7 +66,7 @@ final class SpiceClientUITests: XCTestCase {
         XCTAssertTrue(app.buttons["stopPortalAction"].exists)
         let diagnostics = app.descendants(matching: .any)["portalDiagnosticsMenu"].firstMatch
         XCTAssertTrue(diagnostics.exists)
-        let screenshot = XCTAttachment(screenshot: app.windows["Ravada Portal"].screenshot())
+        let screenshot = XCTAttachment(screenshot: app.windows["connectionsWindow"].screenshot())
         screenshot.name = "Portal recovery controls"
         screenshot.lifetime = .keepAlways
         add(screenshot)
@@ -78,7 +79,7 @@ final class SpiceClientUITests: XCTestCase {
         let portal = app.buttons["Open Ravada Portal…"]
         XCTAssertTrue(portal.waitForExistence(timeout: 10))
         portal.click()
-        let setup = app.buttons["Open Settings…"]
+        let setup = app.buttons["manageRavadaPortals"]
         XCTAssertTrue(setup.waitForExistence(timeout: 10))
         setup.click()
         let name = app.textFields["ravadaPortalNameField"]
@@ -99,7 +100,7 @@ final class SpiceClientUITests: XCTestCase {
         XCTAssertTrue(save.isHittable)
         save.click()
         XCTAssertTrue(app.buttons["removeRavadaPortal"].exists)
-        let screenshot = XCTAttachment(screenshot: app.windows["Ravada"].screenshot())
+        let screenshot = XCTAttachment(screenshot: app.windows["connectionsWindow"].screenshot())
         screenshot.name = "Saved Ravada portal preferences"
         screenshot.lifetime = .keepAlways
         add(screenshot)
@@ -112,4 +113,31 @@ final class SpiceClientUITests: XCTestCase {
         XCTAssertTrue(app.menuItems["Test Portal"].waitForExistence(timeout: 5))
         app.typeKey(.escape, modifierFlags: [])
     }
+    @MainActor
+    func testMainNavigationAndSettingsReuseOneWindowWithoutLosingDraftOnFocus() throws {
+        let app = makeApp()
+        app.launch()
+        XCTAssertTrue(app.buttons["Open Connection File…"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.windows.count, 1)
+        app.buttons["showPortalProfiles"].click()
+        let name = app.textFields["ravadaPortalNameField"]
+        XCTAssertTrue(name.waitForExistence(timeout: 10))
+        name.click()
+        name.typeText("Unsaved draft")
+        app.menuBarItems["File"].click()
+        app.menuItems["Connections"].click()
+        XCTAssertEqual(name.value as? String, "Unsaved draft")
+        XCTAssertEqual(app.windows.count, 1)
+        app.typeKey(",", modifierFlags: .command)
+        XCTAssertTrue(app.descendants(matching: .any)["General"].firstMatch.waitForExistence(timeout: 10))
+        XCTAssertEqual(app.windows.count, 1)
+        app.buttons["showConnectionsHome"].click()
+        XCTAssertTrue(app.buttons["Open Connection File…"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.windows.count, 1)
+        let screenshot = XCTAttachment(screenshot: app.windows["connectionsWindow"].screenshot())
+        screenshot.name = "One main connections window"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+    }
+
 }

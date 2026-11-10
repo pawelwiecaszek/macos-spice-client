@@ -123,11 +123,15 @@ the token itself, not only to its user.
 
 ## Using it with Ravada
 
-1. Save a named HTTPS portal under **Settings › Ravada**. An existing portal address
+1. Save a named HTTPS portal under **Connections › Manage Portals**. An existing portal address
    and browser login are imported automatically.
-2. Choose **Open Ravada Portal…** from the welcome window or File menu.
+2. Choose **Open Ravada Portal…** from Connections or the File menu.
 3. Sign in and select a machine using the portal. Its SPICE connection opens in a
    native session window; the portal remains available for more connections.
+
+Connections, portal browsing, saved profiles, Proxmox VM browsing and Settings share
+one main window. Use **Connections** in a VDI toolbar to return to it; **⌘,** opens
+Settings there. Each VDI keeps its own window, which stays open when the main window closes.
 
 Ravada sessions start in a window even if the portal’s connection file requests
 fullscreen. Use the session’s fullscreen command to enter fullscreen when wanted.

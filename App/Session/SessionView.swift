@@ -6,7 +6,6 @@ import SwiftUI
 /// The display area stays free of overlays once connected.
 struct SessionView: View {
     @Bindable var controller: SessionController
-    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         ZStack {
@@ -76,6 +75,14 @@ struct SessionView: View {
         }
         .navigationTitle(controller.title)
         .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button("Connections", systemImage: "house") {
+                    controller.releaseCursor()
+                    MainWindowController.shared.showCurrentPage()
+                }
+                .help("Show the connections window")
+                .accessibilityIdentifier("showConnectionsFromVDI")
+            }
             ToolbarItemGroup(placement: .primaryAction) {
                 if controller.usb.isAllowed {
                     USBToolbarItems(usb: controller.usb, connected: controller.phase == .connected)
@@ -188,7 +195,7 @@ struct SessionView: View {
                 case .setUpProxmox:
                     Button("Set Up Proxmox Access…") {
                         ProxmoxStore.shared.pendingHost = controller.vmRef?.apiHost
-                        openSettings()
+                        MainWindowController.shared.showSettings(tab: 1)
                     }
                 case .openFile:
                     Button("Open Connection File…") { SessionWindowManager.shared.presentOpenPanel() }
@@ -346,7 +353,6 @@ struct SmartcardToolbarItem: View {
 /// Toolbar Power menu (Proxmox API): shut down, reboot, reset, stop the session's VM.
 struct PowerToolbarItem: View {
     @Bindable var controller: SessionController
-    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         Menu {
@@ -359,12 +365,12 @@ struct PowerToolbarItem: View {
                     Button { controller.power(action) } label: { Label(action.title, systemImage: action.symbol) }
                 }
                 Divider()
-                Button("Virtual Machines…") { VMListWindow.shared.show() }
+                Button("Virtual Machines…") { MainWindowController.shared.showProxmox() }
             } else {
                 Text("Power control needs a Proxmox API token for this server.")
                 Button("Set Up Proxmox Access…") {
                     ProxmoxStore.shared.pendingHost = controller.vmRef?.apiHost
-                    openSettings()
+                    MainWindowController.shared.showSettings(tab: 1)
                 }
             }
         } label: {

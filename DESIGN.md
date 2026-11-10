@@ -1,7 +1,7 @@
 # Design
 
 ## Source of truth
-Active, 2026-11-10. Native macOS 26+ app: welcome, Settings, portal and VDI windows.
+Active, 2026-11-10. Native macOS 26+ app: one main navigation window and independent VDI windows.
 Evidence: AGENTS.md §§2, 7e, 8; App/WelcomeView.swift; App/Ravada; current UI tests.
 No existing DESIGN.md or separate design tokens were present. Phase 2 is local-only.
 
@@ -20,11 +20,15 @@ A macOS VDI user connects to one or more Ravada portals, remembers preferred sha
 and display settings, and uses LDAP credentials only in the portal's login page.
 
 ## Information architecture
-Welcome keeps Open File, Proxmox and Open Ravada. Favorites offer direct portal launch.
+One main navigation window contains Connections, Ravada portal, saved profiles,
+Proxmox VM browsing and Settings. VDI windows remain separate. Welcome keeps Open File,
+Proxmox and Open Ravada; favorites offer direct portal launch.
 Settings > Ravada contains a saved-profile picker, New, editable name/HTTPS address,
 favorite flag, session overrides, Save/Open, Remove and Clear Portal Login.
-The portal toolbar offers saved-profile switching. One portal browser is displayed;
-VDI windows remain independent of portal selection or removal.
+The portal toolbar offers saved-profile switching and Connections/Home. Profile editing
+can return to the retained portal. Cmd+, and each VDI Connections button bring the
+existing main window forward; focusing it must preserve unsaved drafts. VDI windows
+remain independent of portal selection, removal and closing the main window.
 
 ## Design principles
 Explicit save boundaries; validate before persistence. Keep inherited General settings
@@ -57,6 +61,8 @@ Corrupt saved metadata: show recovery guidance and preserve data; never silently
 Save/Open success selects the profile. Removing a profile confirms scope and clears only
 its browser data; Clear Portal Login rotates only that profile's login store.
 Loading/error/offline/Stop behavior retains Phase 1 recovery and duplicate-launch protections.
+Hidden portal pages admit no navigation or connection handoffs, including late callbacks;
+returning preserves the browser document and permits a deliberate View action.
 
 ## Content voice
 Use Portal, Favorite, Use General setting, On/Off, Save Portal and Clear Portal Login.

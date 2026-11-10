@@ -142,7 +142,6 @@ final class SessionWindowManager: NSObject, NSWindowDelegate {
 
         window.makeKeyAndOrderFront(nil)
         NSApp.activate()
-        WelcomeWindow.shared.close()
         controller.start()
         if profile.fullscreen { window.toggleFullScreen(nil) }
         return true

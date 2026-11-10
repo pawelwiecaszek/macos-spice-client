@@ -264,6 +264,11 @@ Goal: pick an `.iso` on the Mac and have it appear in the guest as a CD/DVD driv
 
 ## 7e. Ravada portal and connection-download helper (M8)
 
+- Connections, portal browsing, saved profiles, Proxmox VM browsing and Settings share
+  `MainWindowController`; VDI windows remain independent. Hidden portals reject
+  navigation/download admission and late connection handoffs. Cmd+, and VDI Connections
+  return to the main window. Focusing it preserves unsaved drafts.
+
 - Offer Ravada alongside the native Proxmox VM browser and manual `.vv` opening.
 - Saved Ravada profiles own a name, validated HTTPS address, favorite flag, browser-store
   UUID and optional session preference overrides. Migrate the legacy address and its

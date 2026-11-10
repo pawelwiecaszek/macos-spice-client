@@ -25,7 +25,7 @@ struct RavadaPortalMenuContent: View {
 
     private func portalButton(_ profile: RavadaPortalProfile) -> some View {
         Button(profile.name, systemImage: profile.id == (selectedID ?? store.selectedID) ? "checkmark" : "globe") {
-            RavadaPortalWindow.shared.show(profileID: profile.id)
+            MainWindowController.shared.showPortal(profileID: profile.id)
         }
     }
 }

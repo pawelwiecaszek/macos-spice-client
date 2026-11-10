@@ -175,6 +175,47 @@ struct RavadaPortalLifecycleTests {
         #expect(deliberateReconnect)
         #expect(model.launchNotice == nil)
     }
+
+    @Test func hiddenPortalCannotNavigateOrOfferConnectionsAndResumesWithoutReload() throws {
+        let model = RavadaPortalModel(portalURL: try makeURL(), dataStore: .nonPersistent())
+        defer { model.stop() }
+        let webView = model.webView
+        let page = try #require(webView.loadHTMLString("<html></html>", baseURL: nil))
+        model.webView(webView, didStartProvisionalNavigation: page)
+        model.webView(webView, didCommit: page)
+        model.pause()
+        model.webView(webView, didStartProvisionalNavigation: page)
+        model.webView(webView, didCommit: page)
+        let hidden = model.acceptConnectionOffer(isUserInitiated: false)
+        let conversion = model.approveDownloadConversion(NSObject())
+        #expect(!hidden)
+        #expect(!conversion)
+        #expect(!model.isBusy)
+        model.resume()
+        #expect(model.webView === webView)
+        let deliberate = model.acceptConnectionOffer(isUserInitiated: true)
+        #expect(deliberate)
+    }
+
+    @Test func navigatingAwayDuringReadPreventsALateSessionOpening() async throws {
+        let gate = ReadGate()
+        var opened = 0
+        let model = RavadaPortalModel(portalURL: try makeURL(), dataStore: .nonPersistent(),
+                                     readFile: { _ in
+            await gate.wait()
+            return .success(ConnectionProfile(host: "example.invalid"))
+        }, openConnection: { _ in opened += 1; return true })
+        let work = Task {
+            await model.openDownloadedConnectionFile(at: FileManager.default.temporaryDirectory.appendingPathComponent("unused.vv"))
+        }
+        await gate.waitUntilStarted()
+        model.pause()
+        await gate.release()
+        await work.value
+        #expect(opened == 0)
+        #expect(model.failure == nil)
+        model.stop()
+    }
 }
 
 private actor ReadGate {

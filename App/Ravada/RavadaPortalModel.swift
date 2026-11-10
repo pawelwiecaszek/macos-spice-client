@@ -31,6 +31,7 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
     @ObservationIgnored private var monitor: Task<Void, Never>?
     @ObservationIgnored private var generation = UUID()
     @ObservationIgnored private var stopped = false
+    @ObservationIgnored private(set) var isPresented = true
     @ObservationIgnored private var currentNavigation: WKNavigation?
     @ObservationIgnored private var cancelledNavigations: [WKNavigation] = []
     @ObservationIgnored private var launchGate = RavadaPortalLaunchGate()
@@ -80,9 +81,19 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
         cancelCurrentAction()
     }
 
+    /// Keep browser state while hidden, but admit no navigation or session handoffs.
+    func pause() {
+        isPresented = false
+        cancelCurrentAction()
+    }
+
+    func resume() {
+        if !stopped { isPresented = true }
+    }
+
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
-        guard !stopped, let url = navigationAction.request.url else {
+        guard !stopped, isPresented, let url = navigationAction.request.url else {
             decisionHandler(.cancel)
             return
         }
@@ -108,7 +119,7 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
                  decisionHandler: @escaping @MainActor (WKNavigationResponsePolicy) -> Void) {
-        guard !stopped else { decisionHandler(.cancel); return }
+        guard !stopped, isPresented else { decisionHandler(.cancel); return }
         let response = navigationResponse.response
         if RavadaPortalConfiguration.shouldDisplaySignInPage(
             response, portalURL: portalURL, isMainFrame: navigationResponse.isForMainFrame,
@@ -163,7 +174,7 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-        guard !stopped, !cancelledNavigations.contains(where: { $0 === navigation }) else { return }
+        guard !stopped, isPresented, !cancelledNavigations.contains(where: { $0 === navigation }) else { return }
         currentNavigation = navigation
         failure = nil
         requiresSignIn = false
@@ -172,12 +183,12 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        guard !stopped, navigation === currentNavigation else { return }
+        guard !stopped, isPresented, navigation === currentNavigation else { return }
         updateNavigation()
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
-        guard !stopped, navigation === currentNavigation else { return }
+        guard !stopped, isPresented, navigation === currentNavigation else { return }
         // A newly rendered portal page may auto-launch once after Start finishes.
         // Download conversions do not commit a new document, so they cannot rearm it.
         launchGate.beganDocument()
@@ -206,7 +217,7 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
     }
 
     private func navigationFailed(_ error: any Error, navigation: WKNavigation?) {
-        guard !stopped, navigation === currentNavigation,
+        guard !stopped, isPresented, navigation === currentNavigation,
               !cancelledNavigations.contains(where: { $0 === navigation }) else { return }
         updateNavigation()
         if let failure = RavadaPortalFailure.classify(error, phase: .loadingPortal) {
@@ -217,7 +228,7 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
     }
 
     func approveDownloadConversion(_ conversion: AnyObject) -> Bool {
-        guard !stopped, !isDownloading, approvedConversions.isEmpty else { return false }
+        guard !stopped, isPresented, !isDownloading, approvedConversions.isEmpty else { return false }
         approvedConversions.insert(ObjectIdentifier(conversion))
         return true
     }
@@ -227,7 +238,7 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
     }
 
     private func begin(_ download: WKDownload, conversion: AnyObject) {
-        guard consumeDownloadConversion(conversion), !stopped, !isDownloading,
+        guard consumeDownloadConversion(conversion), !stopped, isPresented, !isDownloading,
               download.originatingFrame.isMainFrame,
               RavadaPortalConfiguration.sameOrigin(download.originalRequest?.url, as: portalURL) else {
             download.cancel(nil)
@@ -252,6 +263,7 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
     }
 
     func acceptConnectionOffer(isUserInitiated: Bool) -> Bool {
+        guard !stopped, isPresented else { return false }
         guard launchGate.accept(isUserInitiated: isUserInitiated) else {
             diagnostics.record(.automaticLaunchesBlocked)
             launchNotice = String(localized: "An extra automatic connection was ignored. Click View in the portal if you want to reconnect.")
@@ -328,13 +340,13 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
     /// without making authenticated network requests in the test suite.
     func openDownloadedConnectionFile(at url: URL, expectedGeneration: UUID? = nil) async {
         let currentGeneration = expectedGeneration ?? generation
-        guard !stopped, currentGeneration == generation else {
+        guard !stopped, isPresented, currentGeneration == generation else {
             await Task.detached { try? FileManager.default.removeItem(at: url) }.value
             return
         }
         isDownloading = true
         let result = await readFile(url)
-        guard !stopped, generation == currentGeneration else { return }
+        guard !stopped, isPresented, generation == currentGeneration else { return }
         isDownloading = false
         switch result {
         case .success(let profile):

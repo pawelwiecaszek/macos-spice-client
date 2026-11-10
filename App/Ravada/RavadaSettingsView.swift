@@ -63,7 +63,7 @@ struct RavadaSettingsView: View {
                         .disabled(!canSave)
                         .accessibilityIdentifier("saveRavadaPortal")
                     Button("Open Ravada Portal…") {
-                        if let profile = saveProfile() { RavadaPortalWindow.shared.show(profileID: profile.id) }
+                        if let profile = saveProfile() { MainWindowController.shared.showPortal(profileID: profile.id) }
                     }
                     .disabled(!canSave)
                 }
@@ -74,7 +74,7 @@ struct RavadaSettingsView: View {
                     Button("Clear Portal Login", role: .destructive) {
                         guard let editorID else { return }
                         do {
-                            try RavadaPortalWindow.shared.clearLogin(profileID: editorID)
+                            try MainWindowController.shared.clearLogin(profileID: editorID)
                             loadSelected()
                         } catch { saveError = error.localizedDescription }
                     }
@@ -92,7 +92,7 @@ struct RavadaSettingsView: View {
             Button("Remove Portal", role: .destructive) {
                 guard let editorID else { return }
                 do {
-                    if let removed = try store.remove(editorID) { RavadaPortalWindow.shared.removed(removed) }
+                    if let removed = try store.remove(editorID) { MainWindowController.shared.removed(removed) }
                     loadSelected()
                 } catch { saveError = error.localizedDescription }
             }
@@ -132,7 +132,7 @@ struct RavadaSettingsView: View {
             if editorID != nil {
                 let old = store.profiles.first { $0.id == editorID }
                 saved = try store.update(draft)
-                if let old { RavadaPortalWindow.shared.updated(from: old, to: saved) }
+                if let old { MainWindowController.shared.updated(from: old, to: saved) }
             } else {
                 saved = try store.add(name: draft.name, address: draft.address,
                                       isFavorite: draft.isFavorite, preferences: draft.preferences)

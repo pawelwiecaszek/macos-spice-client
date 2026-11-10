@@ -23,14 +23,14 @@ struct WelcomeView: View {
                 .buttonStyle(.glassProminent)
                 .controlSize(.large)
                 .keyboardShortcut(.defaultAction)
-            Button("Proxmox Virtual Machines…") { VMListWindow.shared.show() }
+            Button("Proxmox Virtual Machines…") { MainWindowController.shared.showProxmox() }
                 .controlSize(.large)
-            Button("Open Ravada Portal…") { RavadaPortalWindow.shared.show() }
+            Button("Open Ravada Portal…") { MainWindowController.shared.showPortal() }
                 .controlSize(.large)
             if !portals.favorites.isEmpty {
                 Menu("Favorite Ravada Portals") {
                     ForEach(portals.favorites) { profile in
-                        Button(profile.name) { RavadaPortalWindow.shared.show(profileID: profile.id) }
+                        Button(profile.name) { MainWindowController.shared.showPortal(profileID: profile.id) }
                     }
                 }
                 .accessibilityIdentifier("ravadaFavoritePortals")
@@ -47,32 +47,6 @@ struct WelcomeView: View {
             for url in files { SessionWindowManager.shared.open(url) }
             return !files.isEmpty
         } isTargeted: { isTargeted = $0 }
-    }
-}
-
-/// AppKit-managed welcome window (SwiftUI's own windows would also open on file launches).
-@MainActor
-final class WelcomeWindow {
-    static let shared = WelcomeWindow()
-    private var window: NSWindow?
-
-    func show() {
-        if window == nil {
-            let hosting = NSHostingController(rootView: WelcomeView())
-            let window = NSWindow(contentViewController: hosting)
-            window.styleMask = [.titled, .closable, .fullSizeContentView]
-            window.titlebarAppearsTransparent = true
-            window.title = String(localized: "Welcome")
-            window.isReleasedWhenClosed = false
-            window.center()
-            self.window = window
-        }
-        window?.makeKeyAndOrderFront(nil)
-        NSApp.activate()
-    }
-
-    func close() {
-        window?.close()
     }
 }
 
