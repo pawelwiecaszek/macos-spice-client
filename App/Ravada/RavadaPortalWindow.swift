@@ -8,14 +8,33 @@ final class RavadaPortalWindow: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var model: RavadaPortalModel?
 
-    func show() {
-        let address = UserDefaults.standard.string(forKey: RavadaPortalConfiguration.urlKey) ?? ""
-        let url = RavadaPortalConfiguration.portalURL(address)
-        if window == nil || model?.portalURL != url {
+    private var displayedProfile: RavadaPortalProfile?
+
+    func show(profileID: UUID? = nil) {
+        let portals = RavadaPortalStore.shared
+        if let profileID {
+            do { try portals.select(profileID) } catch { return }
+        }
+        let profile = portals.selectedProfile
+        if window == nil || displayedProfile != profile {
             model?.stop()
-            let model = url.map { RavadaPortalModel(portalURL: $0) }
+            let model: RavadaPortalModel?
+            if let profile, let url = profile.url {
+                model = RavadaPortalModel(
+                    portalURL: url, dataStore: WKWebsiteDataStore(forIdentifier: profile.websiteDataStoreID),
+                    openConnection: { connection in
+                        guard let current = portals.profiles.first(where: { $0.id == profile.id }),
+                              current.address == profile.address,
+                              current.websiteDataStoreID == profile.websiteDataStoreID else { return false }
+                        let settings = AppSettings.shared.applying(current.preferences)
+                        return SessionWindowManager.shared.openSession(connection, settings: settings)
+                    })
+            } else {
+                model = nil
+            }
             self.model = model
-            let hosting = NSHostingController(rootView: RavadaPortalView(model: model))
+            displayedProfile = profile
+            let hosting = NSHostingController(rootView: RavadaPortalView(model: model, profileID: profile?.id))
             hosting.sceneBridgingOptions = [.toolbars, .title]
             let window = self.window ?? NSWindow(contentViewController: hosting)
             window.contentViewController = hosting
@@ -37,6 +56,7 @@ final class RavadaPortalWindow: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         model?.stop()
         model = nil
+        displayedProfile = nil
         window = nil
     }
 
@@ -45,22 +65,40 @@ final class RavadaPortalWindow: NSObject, NSWindowDelegate {
         window?.close()
     }
 
-    func clearLogin() {
-        let address = UserDefaults.standard.string(forKey: RavadaPortalConfiguration.urlKey) ?? ""
-        guard let url = RavadaPortalConfiguration.portalURL(address) else { return }
-        let store = RavadaPortalConfiguration.websiteDataStore(for: url)
-        model?.stop()
-        window?.close()
-        // Reopening must use an empty store immediately, even while WebKit finishes
-        // removing data from the old one asynchronously.
-        _ = RavadaPortalConfiguration.websiteDataStore(for: url, replacing: true)
-        store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {}
+    func clearLogin(profileID: UUID) throws {
+        guard let oldID = try RavadaPortalStore.shared.rotateLogin(profileID: profileID) else { return }
+        closeIfDisplaying(profileID)
+        eraseBrowserData(oldID)
+    }
+
+    func removed(_ profile: RavadaPortalProfile) {
+        closeIfDisplaying(profile.id)
+        eraseBrowserData(profile.websiteDataStoreID)
+    }
+
+    func updated(from old: RavadaPortalProfile, to profile: RavadaPortalProfile) {
+        if old.address != profile.address || old.websiteDataStoreID != profile.websiteDataStoreID {
+            closeIfDisplaying(old.id)
+        } else if displayedProfile?.id == old.id {
+            displayedProfile = profile
+        }
+        if old.websiteDataStoreID != profile.websiteDataStoreID { eraseBrowserData(old.websiteDataStoreID) }
+    }
+
+    private func closeIfDisplaying(_ id: UUID) {
+        if displayedProfile?.id == id { close() }
+    }
+
+    private func eraseBrowserData(_ id: UUID) {
+        WKWebsiteDataStore(forIdentifier: id).removeData(
+            ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {}
     }
 
 }
 
 private struct RavadaPortalView: View {
     let model: RavadaPortalModel?
+    let profileID: UUID?
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
@@ -78,6 +116,15 @@ private struct RavadaPortalView: View {
                         openSettings()
                     }
                 }
+            }
+        }
+        .toolbar {
+            ToolbarItem {
+                Menu("Saved Portals", systemImage: "globe") {
+                    RavadaPortalMenuContent(selectedID: profileID)
+                }
+                .accessibilityLabel("Saved Ravada Portals")
+                .accessibilityIdentifier("ravadaPortalSwitcher")
             }
         }
     }

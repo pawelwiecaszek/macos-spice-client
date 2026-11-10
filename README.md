@@ -123,7 +123,8 @@ the token itself, not only to its user.
 
 ## Using it with Ravada
 
-1. Add your HTTPS portal address under **Settings › Ravada**.
+1. Save a named HTTPS portal under **Settings › Ravada**. An existing portal address
+   and browser login are imported automatically.
 2. Choose **Open Ravada Portal…** from the welcome window or File menu.
 3. Sign in and select a machine using the portal. Its SPICE connection opens in a
    native session window; the portal remains available for more connections.
@@ -145,8 +146,17 @@ Use the portal toolbar’s **Diagnostics › Copy Portal Diagnostics** to copy a
 summary. It contains bounded in-memory counters and fixed error categories, without
 portal addresses, usernames, passwords, cookies, tickets, or guest contents.
 
-Each portal address has a separate browser login store. **Clear Portal Login** removes
-that portal’s saved browser data. Certificates must be trusted by macOS; downloading a
+Save multiple profiles and mark frequent ones as favorites for quick access from the
+welcome window. Switch profiles from **Saved Portals** in the portal toolbar or the
+File menu. Each profile has its own browser login, including profiles using the same
+server address. Removing a profile or clearing its login affects only that profile;
+running VDI sessions remain open.
+
+Each profile can inherit General preferences or override guest resizing, Retina
+resolution, the Command key, clipboard sharing, and audio playback. Overrides apply
+to new VDI sessions and are retained on reconnect; they do not change General settings.
+
+**Clear Portal Login** removes that profile’s saved browser data. Certificates must be trusted by macOS; downloading a
 connection file never changes portal certificate trust. Ravada API power controls and
 automatic ticket renewal are not provided; reopen the portal for a fresh connection.
 

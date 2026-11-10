@@ -16,6 +16,7 @@ struct SpiceClientApp: App {
                 Button("Virtual Machines…") { VMListWindow.shared.show() }
                     .keyboardShortcut("0")
                 Button("Open Ravada Portal…") { RavadaPortalWindow.shared.show() }
+                Menu("Saved Ravada Portals") { RavadaPortalMenuContent() }
             }
             CommandMenu("Session") {
                 Button("Send Ctrl+Alt+Del") { SessionWindowManager.shared.keyController?.sendCtrlAltDelete() }

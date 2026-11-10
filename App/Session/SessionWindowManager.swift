@@ -120,9 +120,9 @@ final class SessionWindowManager: NSObject, NSWindowDelegate {
     // MARK: Windows
 
     @discardableResult
-    func openSession(_ profile: ConnectionProfile) -> Bool {
+    func openSession(_ profile: ConnectionProfile, settings: AppSettings = .shared) -> Bool {
         guard confirmUnencrypted(profile) else { return false }
-        let controller = SessionController(profile: profile)
+        let controller = SessionController(profile: profile, settings: settings)
         let hosting = NSHostingController(rootView: SessionView(controller: controller))
         hosting.sceneBridgingOptions = [.toolbars, .title]
         let window = NSWindow(contentViewController: hosting)
@@ -155,7 +155,7 @@ final class SessionWindowManager: NSObject, NSWindowDelegate {
         let window = entry.window
         old.stop()
         windows.removeValue(forKey: old.id)
-        let controller = SessionController(profile: profile, reconnect: context)
+        let controller = SessionController(profile: profile, settings: old.sessionSettings, reconnect: context)
         let hosting = NSHostingController(rootView: SessionView(controller: controller))
         hosting.sceneBridgingOptions = [.toolbars, .title]
         let frame = window.frame

@@ -126,6 +126,9 @@ final class SessionController: RemoteDisplayViewDelegate {
         })
     }
 
+    /// Preserve the same preference snapshot when this session reconnects.
+    var sessionSettings: AppSettings { settings }
+
     // MARK: Proxmox power control
 
     /// A server with an API token is configured for this session's VM.

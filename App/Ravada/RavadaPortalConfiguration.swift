@@ -1,7 +1,7 @@
 import Foundation
 import WebKit
 
-/// Portal preferences contain an address and an opaque WebKit store ID, never credentials.
+/// Shared validation for saved portal addresses and browser navigation.
 enum RavadaPortalConfiguration {
     static let urlKey = "ravadaPortalURL"
 
@@ -49,16 +49,4 @@ enum RavadaPortalConfiguration {
         return ["text/html", "application/xhtml+xml"].contains(response.mimeType?.lowercased() ?? "")
     }
 
-    @MainActor
-    static func websiteDataStore(for portal: URL, replacing: Bool = false) -> WKWebsiteDataStore {
-        // Different portal origins must not share authentication state. WebKit owns the
-        // cookies in its persistent store; UserDefaults only stores a random identifier.
-        let origin = "\(portal.host?.lowercased() ?? ""):\(portal.port ?? 443)"
-        let key = "ravadaPortalWebsiteDataStores"
-        var stores = UserDefaults.standard.dictionary(forKey: key) as? [String: String] ?? [:]
-        let id = replacing ? UUID() : (stores[origin].flatMap(UUID.init(uuidString:)) ?? UUID())
-        stores[origin] = id.uuidString
-        UserDefaults.standard.set(stores, forKey: key)
-        return WKWebsiteDataStore(forIdentifier: id)
-    }
 }

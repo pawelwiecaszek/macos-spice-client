@@ -7,8 +7,16 @@ final class SpiceClientUITests: XCTestCase {
     }
 
     @MainActor
-    func testLaunchShowsWelcomeWindow() throws {
+    private func makeApp() -> XCUIApplication {
         let app = XCUIApplication()
+        app.launchEnvironment["SPICE_RAVADA_TEST_SUITE"] =
+            "com.pawelwiecaszek.spiceclient.uitests.\(UUID().uuidString)"
+        return app
+    }
+
+    @MainActor
+    func testLaunchShowsWelcomeWindow() throws {
+        let app = makeApp()
         app.launch()
         XCTAssertTrue(app.buttons["Open Connection File…"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["Proxmox Virtual Machines…"].exists)
@@ -21,7 +29,7 @@ final class SpiceClientUITests: XCTestCase {
 
     @MainActor
     func testRavadaSetupOpensItsSettingsPane() throws {
-        let app = XCUIApplication()
+        let app = makeApp()
         // Do not navigate to a real saved portal or modify its stored address.
         app.launchArguments = ["-ravadaPortalURL", ""]
         app.launch()
@@ -40,7 +48,7 @@ final class SpiceClientUITests: XCTestCase {
 
     @MainActor
     func testPortalFailureOffersRecoveryAndDiagnostics() throws {
-        let app = XCUIApplication()
+        let app = makeApp()
         // Reserved .invalid domain: exercise network recovery without contacting a
         // saved portal, submitting credentials, or issuing machine actions.
         app.launchArguments = ["-ravadaPortalURL", "https://portal.example.invalid/"]
@@ -61,5 +69,47 @@ final class SpiceClientUITests: XCTestCase {
         screenshot.name = "Portal recovery controls"
         screenshot.lifetime = .keepAlways
         add(screenshot)
+    }
+
+    @MainActor
+    func testSavedFavoritePortalSurvivesRelaunch() throws {
+        let app = makeApp()
+        app.launch()
+        let portal = app.buttons["Open Ravada Portal…"]
+        XCTAssertTrue(portal.waitForExistence(timeout: 10))
+        portal.click()
+        let setup = app.buttons["Open Settings…"]
+        XCTAssertTrue(setup.waitForExistence(timeout: 10))
+        setup.click()
+        let name = app.textFields["ravadaPortalNameField"]
+        XCTAssertTrue(name.waitForExistence(timeout: 10))
+        name.click()
+        name.typeText("Test Portal")
+        let address = app.textFields["ravadaPortalURLField"]
+        address.click()
+        address.typeText("https://portal.example.invalid/")
+        let favorite = app.descendants(matching: .any)["ravadaPortalFavorite"].firstMatch
+        XCTAssertTrue(favorite.exists)
+        favorite.click()
+        let save = app.buttons["saveRavadaPortal"]
+        for _ in 0..<6 {
+            if save.isHittable { break }
+            app.scrollViews.firstMatch.scroll(byDeltaX: 0, deltaY: -350)
+        }
+        XCTAssertTrue(save.isHittable)
+        save.click()
+        XCTAssertTrue(app.buttons["removeRavadaPortal"].exists)
+        let screenshot = XCTAttachment(screenshot: app.windows["Ravada"].screenshot())
+        screenshot.name = "Saved Ravada portal preferences"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        app.terminate()
+        // Reuse this test's private suite; no production profiles are read or modified.
+        app.launch()
+        let favorites = app.descendants(matching: .any)["ravadaFavoritePortals"].firstMatch
+        XCTAssertTrue(favorites.waitForExistence(timeout: 10))
+        favorites.click()
+        XCTAssertTrue(app.menuItems["Test Portal"].waitForExistence(timeout: 5))
+        app.typeKey(.escape, modifierFlags: [])
     }
 }

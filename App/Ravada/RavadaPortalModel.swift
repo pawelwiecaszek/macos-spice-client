@@ -44,7 +44,7 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
         self.readFile = readFile ?? { url in await Self.readAndRemoveConnectionFile(at: url) }
         self.openConnection = openConnection ?? { SessionWindowManager.shared.openSession($0) }
         let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = dataStore ?? RavadaPortalConfiguration.websiteDataStore(for: portalURL)
+        configuration.websiteDataStore = dataStore ?? .nonPersistent()
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
         webView.navigationDelegate = self

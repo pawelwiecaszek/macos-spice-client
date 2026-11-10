@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 /// Shown when the app is launched without a connection file.
 struct WelcomeView: View {
     @State private var isTargeted = false
+    @Bindable private var portals = RavadaPortalStore.shared
 
     var body: some View {
         VStack(spacing: 16) {
@@ -26,12 +27,20 @@ struct WelcomeView: View {
                 .controlSize(.large)
             Button("Open Ravada Portal…") { RavadaPortalWindow.shared.show() }
                 .controlSize(.large)
+            if !portals.favorites.isEmpty {
+                Menu("Favorite Ravada Portals") {
+                    ForEach(portals.favorites) { profile in
+                        Button(profile.name) { RavadaPortalWindow.shared.show(profileID: profile.id) }
+                    }
+                }
+                .accessibilityIdentifier("ravadaFavoritePortals")
+            }
             Text("or drop a .vv file here")
                 .font(.footnote)
                 .foregroundStyle(.tertiary)
         }
         .padding(40)
-        .frame(width: 520, height: 420)
+        .frame(width: 520, height: portals.favorites.isEmpty ? 420 : 470)
         .background(isTargeted ? Color.accentColor.opacity(0.08) : .clear)
         .dropDestination(for: URL.self) { urls, _ in
             let files = urls.filter { $0.pathExtension.lowercased() == "vv" }

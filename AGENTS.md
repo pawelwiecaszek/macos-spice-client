@@ -265,6 +265,16 @@ Goal: pick an `.iso` on the Mac and have it appear in the guest as a CD/DVD driv
 ## 7e. Ravada portal and connection-download helper (M8)
 
 - Offer Ravada alongside the native Proxmox VM browser and manual `.vv` opening.
+- Saved Ravada profiles own a name, validated HTTPS address, favorite flag, browser-store
+  UUID and optional session preference overrides. Migrate the legacy address and its
+  existing origin-store UUID once. Persist empty profiles after removal so legacy data
+  cannot resurrect them. New same-origin profiles still receive independent login stores.
+- Profile edits, selection/removal and login clearing must not close active VDI sessions.
+  An origin change creates a fresh browser store; clear-login rotates only the target
+  profile's store before erasing old browser data. Corrupt metadata is preserved and
+  writes are blocked rather than silently discarding saved profiles.
+- Profile preferences inherit General settings unless explicitly overridden. Overrides
+  use nonpersistent session settings, never write General defaults, and survive reconnect.
 - `App/Ravada` embeds the configured HTTPS portal with WebKit; browser authentication
   stays in a separate persistent WebKit data store for each portal origin. No native
   Ravada API or automatic ticket-renewal contract is assumed.
