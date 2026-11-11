@@ -3,7 +3,7 @@
 ## Source of truth
 Active, 2026-11-10. Native macOS 26+ app: one main navigation window and independent VDI windows.
 Evidence: AGENTS.md §§2, 7e, 8; App/WelcomeView.swift; App/Ravada; current UI tests.
-Use native system controls; no separate design-token layer. Phases 1–3 are accepted; Phase 4 is under local validation.
+Use native system controls; no separate design-token layer. Phases 1–4 are accepted; Help is under local validation.
 
 ## Brand
 Native, restrained, clear. Use system controls and visible connection state. Avoid
@@ -109,3 +109,15 @@ window widths. Manual refresh only; job polling stops when leaving the page.
 A failed catalog refresh clears cached success/rows and shows Desktop Access Unavailable
 with sign-in/access recovery. No Desktops Available is reserved for a successful empty
 catalog response. Empty/error content fills remaining height so the page header stays at the top.
+
+## Built-in Help
+
+Help is an offline, searchable topic list and article pane in the existing main window,
+reachable from the macOS Help menu, ⌘? and Connections. Context topics cover keyboard
+and troubleshooting. Opening Help releases captured VDI input and preserves VDI windows;
+leaving My Desktops follows its existing cancellation rules. Help search filters titles,
+summary and article text. External official references open only on deliberate Link clicks.
+
+Use clear task-oriented steps and distinguish client support from server/guest availability.
+State unsupported features explicitly; do not claim full SPICE parity, bidirectional file
+sharing or zero-copy video. Capability audit evidence lives in docs/CLIENT_CAPABILITIES.md.

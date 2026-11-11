@@ -38,12 +38,15 @@ struct WelcomeView: View {
                 }
                 .accessibilityIdentifier("ravadaFavoritePortals")
             }
+            Button("Help", systemImage: "questionmark.circle") { MainWindowController.shared.showHelp() }
+                .buttonStyle(.link)
+                .accessibilityIdentifier("openClientHelp")
             Text("or drop a .vv file here")
                 .font(.footnote)
                 .foregroundStyle(.tertiary)
         }
         .padding(40)
-        .frame(width: 520, height: portals.favorites.isEmpty ? 470 : 520)
+        .frame(width: 520, height: portals.favorites.isEmpty ? 500 : 550)
         .background(isTargeted ? Color.accentColor.opacity(0.08) : .clear)
         .dropDestination(for: URL.self) { urls, _ in
             let files = urls.filter { $0.pathExtension.lowercased() == "vv" }

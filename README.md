@@ -207,3 +207,13 @@ the folder again after restarting. No login item or background service is instal
 
 [MIT](LICENSE). SPICE protocol constants come from the BSD-licensed
 [spice-protocol](https://gitlab.freedesktop.org/spice/spice-protocol) headers.
+
+## Built-in Help and capability coverage
+
+Choose **Help › MacOS Spice Client Help** (⌘?) or **Help** on Connections for the offline,
+searchable guide. It covers Ravada/My Desktops, Proxmox/.vv files, keyboard and windows,
+clipboard/file sending, audio/devices and troubleshooting. Help reuses the main window.
+
+The client has substantial native SPICE coverage, but full protocol parity is not
+claimed. See [the capability audit](docs/CLIENT_CAPABILITIES.md) for code evidence,
+server/guest prerequisites, limitations and prioritized correctness/performance work.

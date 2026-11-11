@@ -8,13 +8,15 @@ import WebKit
 @MainActor
 @Observable
 final class MainWindowController: NSObject, NSWindowDelegate {
-    enum Page { case home, portal, portals, desktops, proxmox, settings }
+    enum Page { case home, portal, portals, desktops, proxmox, settings, help }
     static let shared = MainWindowController()
     @ObservationIgnored private(set) var window: NSWindow?
     private(set) var page: Page = .home
     private(set) var model: RavadaPortalModel?
     private(set) var displayedProfile: RavadaPortalProfile?
     private(set) var desktopStore: RavadaDesktopStore?
+    private(set) var helpTopicID = "start"
+    private(set) var helpRequestID = UUID()
     @ObservationIgnored private let portals: RavadaPortalStore
 
     init(portals: RavadaPortalStore = .shared) {
@@ -29,6 +31,13 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     func showSettings(tab: Int? = nil) {
         if let tab { AppSettings.shared.selectedSettingsTab = tab }
         navigate(to: .settings)
+    }
+
+    func showHelp(topicID: String = "start") {
+        SessionWindowManager.shared.keyController?.releaseCursor()
+        helpTopicID = topicID
+        helpRequestID = UUID()
+        navigate(to: .help)
     }
 
     func showCurrentPage() { present() }

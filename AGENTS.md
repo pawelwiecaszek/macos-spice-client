@@ -331,7 +331,7 @@ Goal: pick an `.iso` on the Mac and have it appear in the guest as a CD/DVD driv
 ## 8. Input & window behaviour
 
 - Capture keyboard in a first-responder `NSView`; map `NSEvent.keyCode` (macOS virtual key) → PC AT set-1 scancode via a static table in `App/Input/Keymap.swift`. Extended keys (arrows, Ins/Del/Home/End/PgUp/PgDn, right Ctrl/Alt, keypad Enter/÷) use the `0xE0` prefix; key-up sets bit `0x80` on the scancode byte. Verify encoding against `spice-gtk` before shipping.
-- Cmd key: configurable — send as Windows/Super, or reserve for macOS shortcuts (default: reserve Cmd+Q/W/H/Tab/Space; send everything else).
+- Cmd key: configurable — send as Windows/Super, or reserve for macOS shortcuts (default: reserve Cmd+Q/W/H/Tab/Space and Cmd+?; send everything else).
 - Provide menu items + `.vv`-defined hotkeys for: Send Ctrl+Alt+Del (`secure-attention`), Release cursor, Toggle fullscreen.
 - Pointer: client mode = absolute positions, system cursor hidden only over the view. Server mode = pointer lock (`CGAssociateMouseAndMouseCursorPosition(false)` + relative deltas), release via hotkey.
 - Sync Caps/Num/Scroll lock state on focus gain.
@@ -391,3 +391,15 @@ Test environments: Proxmox VE VM with QXL or virtio-gpu + `spice-vdagent`; plain
 - Don't invent wire constants — look them up. If you can't verify, leave a `// TODO(verify):` and say so in your summary.
 - Never commit real `.vv` files, tickets, hostnames, or CA material from the maintainer's infrastructure.
 - Update this file when a fixed decision changes.
+
+## 13. Help and capability evidence
+
+- Built-in offline Help reuses MainWindowController and is available from the Help
+  menu, Connections and Cmd+?. Release captured VDI input when opening it; Help must
+  not close a VDI. Keep the Help shortcut local even when forwarding Command keys.
+- Help content must distinguish client implementation from negotiated/server/guest
+  availability. No full-SPICE, zero-copy, bidirectional-file or universal-device claims.
+- docs/CLIENT_CAPABILITIES.md records the 2026-11-11 audit. Dropped drawing commands,
+  WAIT_FOR_CHANNELS/cache ordering, A/V latency/time integration, single-surface heads,
+  migration and CPU-copy video delivery remain explicit gaps, not completed features.
+  Update this matrix with implementation and measured/live evidence as fixes land.

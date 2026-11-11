@@ -24,6 +24,12 @@ struct SpiceClientApp: App {
                 Button("Open Ravada Portal…") { MainWindowController.shared.showPortal() }
                 Menu("Saved Ravada Portals") { RavadaPortalMenuContent() }
             }
+            CommandGroup(replacing: .help) {
+                Button("MacOS Spice Client Help") { MainWindowController.shared.showHelp() }
+                    .keyboardShortcut("?", modifiers: [.command, .shift])
+                Button("Keyboard & Mouse Help") { MainWindowController.shared.showHelp(topicID: "keyboard") }
+                Button("Troubleshooting") { MainWindowController.shared.showHelp(topicID: "troubleshooting") }
+            }
             CommandMenu("Session") {
                 Button("Send Ctrl+Alt+Del") { SessionWindowManager.shared.keyController?.sendCtrlAltDelete() }
                     .keyboardShortcut(.delete, modifiers: [.control, .option, .command])
@@ -40,6 +46,7 @@ struct SpiceClientApp: App {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var openedFileAtLaunch = false
+    private var helpShortcut: ClientHelpShortcut?
 
     func application(_ application: NSApplication, open urls: [URL]) {
         openedFileAtLaunch = true
@@ -47,6 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        helpShortcut = ClientHelpShortcut()
         // Files opened at launch arrive before this point; otherwise show the welcome window.
         if !openedFileAtLaunch && !SessionWindowManager.shared.hasSessions {
             MainWindowController.shared.showHome()
@@ -61,6 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationWillTerminate(_ notification: Notification) {
+        helpShortcut?.stop()
         DownloadWatcher.shared.stop()
         MainWindowController.shared.close()
         SessionWindowManager.shared.closeAll()

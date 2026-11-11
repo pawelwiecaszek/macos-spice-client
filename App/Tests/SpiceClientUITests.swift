@@ -197,4 +197,35 @@ final class SpiceClientUITests: XCTestCase {
         add(screenshot)
     }
 
+    @MainActor
+    func testHelpMenuSearchAndShortcutReuseConnectionsWindow() throws {
+        let app = makeApp()
+        app.launch()
+        XCTAssertTrue(app.buttons["Open Connection File…"].waitForExistence(timeout: 10))
+        app.menuBarItems["Help"].click()
+        app.menuItems["MacOS Spice Client Help"].click()
+        let search = app.textFields["clientHelpSearch"]
+        XCTAssertTrue(search.waitForExistence(timeout: 10))
+        XCTAssertEqual(app.windows.count, 1)
+        search.click(); search.typeText("isochronous")
+        app.descendants(matching: .any)["clientHelpTopic-devices"].firstMatch.click()
+        XCTAssertTrue(app.staticTexts["Device limits"].waitForExistence(timeout: 5))
+        let screenshot = XCTAttachment(screenshot: app.windows["connectionsWindow"].screenshot())
+        screenshot.name = "Offline Help with device prerequisites"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        app.menuBarItems["Help"].click()
+        app.menuItems["Keyboard & Mouse Help"].click()
+        XCTAssertTrue(app.staticTexts["Release input"].waitForExistence(timeout: 5))
+        search.click(); search.typeText("isochronous")
+        app.menuBarItems["Help"].click()
+        app.menuItems["Keyboard & Mouse Help"].click()
+        XCTAssertTrue(app.staticTexts["Release input"].waitForExistence(timeout: 5))
+        app.buttons["showConnectionsHome"].click()
+        app.activate()
+        app.typeKey("?", modifierFlags: [.command, .shift])
+        XCTAssertTrue(app.textFields["clientHelpSearch"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.windows.count, 1)
+    }
+
 }

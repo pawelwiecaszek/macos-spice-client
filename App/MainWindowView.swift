@@ -24,6 +24,8 @@ struct MainWindowView: View {
                         .frame(maxWidth: .infinity)
                 case .proxmox:
                     VMListView(store: .shared)
+                case .help:
+                    ClientHelpView(initialTopicID: navigation.helpTopicID, requestID: navigation.helpRequestID)
                 case .settings:
                     SettingsView(settings: .shared)
                         .frame(maxWidth: .infinity)
@@ -70,6 +72,7 @@ struct MainWindowView: View {
         case .desktops: String(localized: "My Desktops")
         case .proxmox: String(localized: "Virtual Machines")
         case .settings: String(localized: "Settings")
+        case .help: String(localized: "Help")
         }
     }
 }
