@@ -140,6 +140,7 @@ public actor DisplayChannel {
     private var dirty: Rect?
     private var flushScheduled = false
     private var resolver = ImageResolver(pixmapCacheBudget: DisplayChannel.pixmapCacheBudget)
+    var cachedPixmapCount: Int { resolver.pixmaps.count }
     private var streams: [UInt32: VideoStream] = [:]
     private var warnedTypes: Set<UInt16> = []
 
@@ -171,9 +172,11 @@ public actor DisplayChannel {
             closed = true
             events.finish()
         }
+        // Each display owns its resolver. spice-server@0c2c141 keys pixmap/GLZ
+        // objects by (RedClient,id); distinct UInt8 channel IDs isolate them, including 0.
         try await connection.send(DisplayClientEncoder.initialize(
-            pixmapCacheID: 1, pixmapCacheSize: Int64(Self.pixmapCacheBudget),
-            glzDictionaryID: 1, glzWindowSize: Self.glzWindowSize
+            pixmapCacheID: connection.id, pixmapCacheSize: Int64(Self.pixmapCacheBudget),
+            glzDictionaryID: connection.id, glzWindowSize: Self.glzWindowSize
         ))
         if connection.serverCaps.contains(DisplayCapability.prefCompression.rawValue) {
             // GLZ (global dictionary) compresses best over WAN; QUIC is used for photos.
@@ -184,7 +187,13 @@ public actor DisplayChannel {
             try await connection.send(DisplayClientEncoder.preferredVideoCodecs(Self.videoCodecs))
         }
         while true {
+            await connection.messageHandled()
             let message = try await connection.nextMessage()
+            // spice-common@58d375e spice.proto:531–535 and spice-gtk@f04479c
+            // channel-display.c:1247–1254: wait BEFORE invalidating the pixmap cache.
+            if message.type == DisplayServerMessage.invalAllPixmaps.rawValue {
+                try await connection.waitForChannels(WaitForChannels(decoding: message.payload))
+            }
             do {
                 try handle(message)
             } catch WireError.limitExceeded(let what) {

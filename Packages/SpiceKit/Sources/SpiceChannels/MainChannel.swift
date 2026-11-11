@@ -66,6 +66,7 @@ public actor MainChannel {
     public func run() async throws {
         defer { events.finish() }
         while true {
+            await connection.messageHandled()
             let message = try await connection.nextMessage()
             try await handle(message)
         }

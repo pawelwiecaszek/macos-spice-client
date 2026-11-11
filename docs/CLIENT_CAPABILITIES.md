@@ -5,8 +5,8 @@ This is an implementation/evidence matrix, not a declaration of full SPICE parit
 
 **Conclusion:** the client already implements substantial native SPICE functionality,
 but it does not take full advantage of the protocol or every Ravada workflow. Missing
-drawing commands, cross-channel ordering and A/V timing are correctness/interoperability
-work. Lower-copy video presentation is a later optimization. Ravada fresh-ticket
+drawing commands and A/V timing remain correctness/interoperability work. Cross-channel
+ordering now has a locally tested implementation; live acceptance remains pending. Lower-copy video presentation is a later optimization. Ravada fresh-ticket
 reconnect, native power controls and provisioning remain broker integration work.
 
 ## Evidence boundaries
@@ -27,7 +27,7 @@ connection files or guest contents were inspected during this audit.
 | Secure transport, proxy, ticket authentication | `Packages/SpiceKit/Sources/SpiceTransport/ChannelLinker.swift`; `SpiceSession.swift` | SPICE ticket auth supported; SASL-only servers are refused. Preserve per-file CA/subject validation and no TLS downgrade. |
 | Still images and caches | `SpiceChannels/ImageResolver.swift:38`; `Tests/SpiceChannelsTests/DisplayReplayTests.swift:45` | Raw/QUIC/LZ/GLZ/ZLIB-GLZ/LZ4/JPEG paths and captured replay tests exist. Cache ordering still needs the cross-channel fix below. |
 | Drawing commands | `SpiceChannels/DisplayChannel.swift:334` | `drawRop3`, `drawStroke`, `drawText`, `drawComposite` are dropped. Baseline ROP3/stroke/text are rendering-completeness gaps. Composite is not advertised in the current display-capability set; verify newer schema/capability semantics separately. |
-| Channel synchronization | `SpiceChannels/ChannelConnection.swift:90`; `DisplayChannel.swift:142,175` | `WAIT_FOR_CHANNELS` is ignored; separate resolvers use the same advertised pixmap/GLZ IDs, so cache ownership also needs resolution. Official protocol requires waiting for listed channel/message serials; shared pixmap invalidation uses this ordering. |
+| Channel synchronization | `SpiceChannels/ChannelConnection.swift`; `ChannelSynchronization.swift`; `DisplayChannel.swift` | Implemented and tested locally: processed-message barriers, synchronized invalidation, independent display pixmap/GLZ IDs and bounded cancellation/teardown. [Contract and evidence](CHANNEL_SYNCHRONIZATION.md). Live acceptance pending. |
 | Video negotiation | `SpiceChannels/DisplayChannel.swift:57`, `:178`; `Tests/SpiceCodecsTests/VideoDecoderTests.swift:113` | Runtime hardware-supported H.264/H.265 plus MJPEG are advertised. VP8/VP9 are deliberately not advertised. Server encoder/profile compatibility still requires representative live streams. |
 | Video delivery | `SpiceCodecs/VideoDecoder.swift:59`, `:149`; `SpiceChannels/DisplayChannel.swift:441`; `App/Display/MetalRenderer.swift:121` | Hardware decode copies pixels to CPU surfaces and uploads them to Metal. No zero-copy CVMetalTextureCache path currently. Frame timestamps feed reports, not presentation scheduling. |
 | Playback / recording | `SpiceChannels/AudioChannels.swift:17`; `App/Session/AudioController.swift:94`, `:110`, `:131` | Playback latency is advertised but ignored by the app; playback timestamps are discarded. PCM/Opus playback and raw microphone capture exist. Opus microphone encoding is not enabled; record volume/mute integration needs verification. |

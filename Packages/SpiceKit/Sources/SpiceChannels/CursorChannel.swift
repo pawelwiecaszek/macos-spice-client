@@ -37,6 +37,7 @@ public actor CursorChannel {
     public func run() async throws {
         defer { events.finish() }
         while true {
+            await connection.messageHandled()
             let message = try await connection.nextMessage()
             do {
                 try handle(message)

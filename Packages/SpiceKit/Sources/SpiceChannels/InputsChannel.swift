@@ -35,6 +35,7 @@ public actor InputsChannel {
     /// Processes server messages (modifiers, motion acks) until closed.
     public func run() async throws {
         while true {
+            await connection.messageHandled()
             let message = try await connection.nextMessage()
             switch InputsServerMessage(rawValue: message.type) {
             case .initialize, .keyModifiers:

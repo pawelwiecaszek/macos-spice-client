@@ -94,10 +94,11 @@ Source anchors are explained in the audit.
 
 ## Verification and next step
 
-This revision changes planning documents only; prior passing code/test evidence stays
-valid and no application behavior changes. Validate referenced files/anchors and have
-an independent reviewer challenge unnecessary dependencies and test gates.
+C2 is implemented locally with wire, ordering, cancellation and cache-isolation
+regressions; see [the pinned contract and acceptance boundary](CHANNEL_SYNCHRONIZATION.md).
+Automated completion and live acceptance are recorded separately. The installed
+application remains accepted Phase 4.
 
-**Next implementation:** bounded C2 source/serial/cache-ownership verification, then
-failing cache-population/reference/invalidation and two-channel ordering tests. Stop that slice if its precise wire contract cannot
-be established; use the escape rule rather than beginning an unbounded rewrite.
+**Next:** finish C2 review and live regression checks, then Phase 5 manual fresh-ticket
+reconnect using the existing broker and session-replacement paths. Automatic recovery
+follows only after the manual flow is verified.
