@@ -262,10 +262,76 @@ Goal: pick an `.iso` on the Mac and have it appear in the guest as a CD/DVD driv
 - TLS for the API: macOS trust **or** the cluster CA learned from that host's `.vv` (`pve-root-ca`), with hostname check; or a leaf SHA-256 fingerprint the user explicitly pinned after seeing it. No skip-verification path.
 - Endpoints: `GET /cluster/resources?type=vm`, `GET /nodes/{node}/qemu/{vmid}/status/current`, `POST …/status/{start|shutdown|reboot|reset|stop|suspend|resume}`, `POST …/spiceproxy` (fresh connection file → parsed by `VVFileParser`, so it gets the same validation as a downloaded `.vv`). Reset/Stop require confirmation. Token needs VM.Audit, VM.PowerMgmt, VM.Console.
 
+## 7e. Ravada portal and connection-download helper (M8)
+
+- `Ravada` package models decode the ordinary-user catalog only, preserving nested
+  clone IDs and unknown policy/state. Authentication stays in a WebKit isolated
+  client-world fixed-route fetch; never export cookies or use page-world globals.
+  Broker requests have size/time limits, no redirects, and per-request abort
+  ownership. Catalog refresh is manual; job polling belongs only to explicit Connect.
+  Cancel on navigation/hide/close/minimize. The Ravada 2.4.6 catalog can enqueue
+  server thumbnail refreshes; do not describe it as entirely side-effect-free.
+- Native My Desktops uses server-authorized clone/standalone IDs, per-profile/address
+  machine favorites and a single Connect at a time. Revalidate access before Start and
+  before fetching a ticket; verify matching request ID, successful done, expected domain,
+  active/unlocked state and ready display. Never retry a Start send. Cancelled/ambiguous
+  starts may continue server-side. Unsupported/denied metadata and clone-required bases
+  fall back to the portal. Any advertised TLS driver blocks fallback to plain, even when
+  its extension/readiness metadata is incomplete. No screenshot fetches or silent clones.
+- Session origin is app-owned context carried through open/replace. Explicit Ravada
+  origin prevents Proxmox inference from .vv contents. Machine identity comes only
+  from the configured-origin/base-path SPICE display response route; otherwise nil.
+  Before adding future broker actions, verify the session's portal origin/store epoch
+  still matches its saved profile; profile UUID alone must not authorize another origin.
+
+- Connections, portal browsing, saved profiles, Proxmox VM browsing and Settings share
+  `MainWindowController`; VDI windows remain independent. Hidden portals reject
+  navigation/download admission and late connection handoffs. Cmd+, and VDI Connections
+  return to the main window. Focusing it preserves unsaved drafts.
+
+- Offer Ravada alongside the native Proxmox VM browser and manual `.vv` opening.
+- Saved Ravada profiles own a name, validated HTTPS address, favorite flag, browser-store
+  UUID and optional session preference overrides. Migrate the legacy address and its
+  existing origin-store UUID once. Persist empty profiles after removal so legacy data
+  cannot resurrect them. New same-origin profiles still receive independent login stores.
+- Profile edits, selection/removal and login clearing must not close active VDI sessions.
+  An origin change creates a fresh browser store; clear-login rotates only the target
+  profile's store before erasing old browser data. Corrupt metadata is preserved and
+  writes are blocked rather than silently discarding saved profiles.
+- Profile preferences inherit General settings unless explicitly overridden. Overrides
+  use nonpersistent session settings, never write General defaults, and survive reconnect.
+- `App/Ravada` embeds the configured HTTPS portal with WebKit; browser authentication
+  stays in a separate persistent WebKit data store for each saved profile. Only release-verified
+  catalog/metadata/start/job/display routes are exposed. Native Connect may submit Start
+  once; no standalone power controls, cloning or ticket-renewal API is assumed.
+- Ravada console sessions start windowed regardless of a generated `fullscreen` hint;
+  manually opened connection files retain their existing fullscreen behavior.
+- Ravada may render its LDAP login page as HTTP 401; allow same-origin renderable HTML
+  login pages instead of discarding them. Recovery navigates to the configured portal
+  without replaying a machine action. Stop invalidates pending downloads and parsing;
+  late navigation callbacks must not overwrite a newer load's state. Portal diagnostics
+  are bounded in-memory counters and fixed failure categories only, copied on request.
+- Each rendered portal document may offer one initial automatic connection. Any accepted
+  handoff, including a manual View download, consumes that allowance. Later downloads
+  require `WKDownload.isUserInitiated`; blocked automatic offers show a nonmodal notice
+  and increment `automaticLaunchesBlocked`. Do not infer user intent from mouse-button
+  numeric values or bypass the existing origin/frame checks.
+- Connection downloads must remain on the configured HTTPS origin (including port),
+  preserve the browser request/session, use the existing `VVFileParser`, and be bounded
+  to 1 MiB with a timeout. Clean up app-owned temporary files. Portal TLS uses macOS
+  trust; a downloaded `.vv` never teaches the portal a CA.
+- `App/Downloads` is opt-in and watches a user-selected folder only while the app runs.
+  Permission is session-only; no new entitlement, login item, or background service.
+  Ignore baseline files, wait for stable contents, reject symlinks and oversized files,
+  and verify validated contents again during delivery. Central file-opening deduplication
+  prevents browser/Finder/watcher duplicates without retaining plaintext tickets.
+- `AppIntegrationTests` contains hosted Swift Testing tests for these app workflows;
+  `SpiceClientTests` is included in the shared Xcode scheme.
+
 ## 8. Input & window behaviour
 
 - Capture keyboard in a first-responder `NSView`; map `NSEvent.keyCode` (macOS virtual key) → PC AT set-1 scancode via a static table in `App/Input/Keymap.swift`. Extended keys (arrows, Ins/Del/Home/End/PgUp/PgDn, right Ctrl/Alt, keypad Enter/÷) use the `0xE0` prefix; key-up sets bit `0x80` on the scancode byte. Verify encoding against `spice-gtk` before shipping.
-- Cmd key: configurable — send as Windows/Super, or reserve for macOS shortcuts (default: reserve Cmd+Q/W/H/Tab/Space; send everything else).
+- Cmd key: configurable — send as Windows/Super, or reserve for macOS shortcuts (default: reserve Cmd+Q/W/H/Tab/Space and Cmd+?; send everything else).
 - Provide menu items + `.vv`-defined hotkeys for: Send Ctrl+Alt+Del (`secure-attention`), Release cursor, Toggle fullscreen.
 - Pointer: client mode = absolute positions, system cursor hidden only over the view. Server mode = pointer lock (`CGAssociateMouseAndMouseCursorPosition(false)` + relative deltas), release via hotkey.
 - Sync Caps/Num/Scroll lock state on focus gain.
@@ -325,3 +391,15 @@ Test environments: Proxmox VE VM with QXL or virtio-gpu + `spice-vdagent`; plain
 - Don't invent wire constants — look them up. If you can't verify, leave a `// TODO(verify):` and say so in your summary.
 - Never commit real `.vv` files, tickets, hostnames, or CA material from the maintainer's infrastructure.
 - Update this file when a fixed decision changes.
+
+## 13. Help and capability evidence
+
+- Built-in offline Help reuses MainWindowController and is available from the Help
+  menu, Connections and Cmd+?. Release captured VDI input when opening it; Help must
+  not close a VDI. Keep the Help shortcut local even when forwarding Command keys.
+- Help content must distinguish client implementation from negotiated/server/guest
+  availability. No full-SPICE, zero-copy, bidirectional-file or universal-device claims.
+- docs/CLIENT_CAPABILITIES.md records the 2026-11-11 audit. Dropped drawing commands,
+  WAIT_FOR_CHANNELS/cache ordering, A/V latency/time integration, single-surface heads,
+  migration and CPU-copy video delivery remain explicit gaps, not completed features.
+  Update this matrix with implementation and measured/live evidence as fixes land.

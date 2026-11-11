@@ -23,6 +23,10 @@ Metal, and the app runs fully sandboxed.
 - **Virtual Machines** window (⌘0): browse the VMs of your Proxmox servers and connect,
   start, shut down, reboot, pause or stop them, without downloading a file.
 - **Power menu** in every Proxmox session window.
+- **Ravada portal**: sign in and choose a machine in an embedded browser; SPICE
+  connection files open directly in the native viewer. Proxmox remains available separately.
+- **Download helper**: optionally watch a chosen browser download folder and open new
+  `.vv` files automatically while the app runs.
 - **Automatic reconnect** after network drops or sleep, in the same window — shared
   devices, the mounted disc image and the microphone come back on their own.
 
@@ -117,7 +121,102 @@ API Tokens). The token needs **VM.Audit**, **VM.PowerMgmt** and **VM.Console** �
 example the *PVEVMUser* role on `/vms`. If privilege separation is on, give the role to
 the token itself, not only to its user.
 
+## Using it with Ravada
+
+**My Ravada Desktops…** opens the native catalog. On first use, sign in through the
+portal, then choose **My Desktops**. Search desktops, mark machine favorites and
+Connect to an authorized clone or standalone machine. Favorites are scoped to the saved
+portal profile/address and contain machine IDs only, never tickets or connection files.
+
+Connect rechecks catalog access and permitted machine metadata. For a stopped desktop
+it submits one Start, follows its matching successful request, waits for readiness,
+and fetches fresh SPICE details. Repeated clicks while connecting are ignored. Start
+is a non-idempotent GET in Ravada 2.4.6 and is not retried by the client after an
+ambiguous outcome. Cancel stops the client; a submitted server Start may continue.
+Leaving, closing, minimizing or hiding the page/app cancels pending work. Unhiding
+refreshes the catalog and never replays Start. Catalog refresh is manual otherwise.
+
+Templates needing cloning, locked/unknown states, hibernated machines and accounts
+without permitted display discovery use **Open in Portal**. Advertised TLS is preferred;
+incomplete TLS metadata never falls back to plain SPICE. If only plain SPICE is
+advertised, the existing unencrypted-connection confirmation still applies.
+
+1. Save a named HTTPS portal under **Connections › Manage Portals**. An existing portal address
+   and browser login are imported automatically.
+2. Choose **Open Ravada Portal…** from Connections or the File menu.
+3. Sign in and select a machine using the portal. Its SPICE connection opens in a
+   native session window; the portal remains available for more connections.
+
+Connections, portal browsing, saved profiles, Proxmox VM browsing and Settings share
+one main window. Use **Connections** in a VDI toolbar to return to it; **⌘,** opens
+Settings there. Each VDI keeps its own window, which stays open when the main window closes.
+
+Ravada sessions start in a window even if the portal’s connection file requests
+fullscreen. Use the session’s fullscreen command to enter fullscreen when wanted.
+
+The portal distinguishes network, certificate, sign-in, permission, and connection-file
+errors. Recovery returns to the configured portal so you can choose a machine again;
+it does not automatically resubmit the previous action. **Stop** cancels the current
+page load or connection download, including a file still being processed.
+
+The portal allows its initial automatic connection after a desktop starts. Once a
+connection has been handed off, additional background offers from that page are
+ignored. Clicking **View** explicitly still opens a connection. This prevents a
+delayed Ravada automatic download from unexpectedly replacing a working viewer.
+
+Use the portal toolbar’s **Diagnostics › Copy Portal Diagnostics** to copy a support
+summary. It contains bounded in-memory counters and fixed error categories, without
+portal addresses, usernames, passwords, cookies, tickets, or guest contents.
+
+Save multiple profiles and mark frequent ones as favorites for quick access from the
+welcome window. Switch profiles from **Saved Portals** in the portal toolbar or the
+File menu. Each profile has its own browser login, including profiles using the same
+server address. Removing a profile or clearing its login affects only that profile;
+running VDI sessions remain open.
+
+Each profile can inherit General preferences or override guest resizing, Retina
+resolution, the Command key, clipboard sharing, and audio playback. Overrides apply
+to new VDI sessions and are retained on reconnect; they do not change General settings.
+
+**Clear Portal Login** removes that profile’s saved browser data. Certificates must be trusted by macOS; downloading a
+connection file never changes portal certificate trust. Standalone Ravada power controls and
+automatic ticket renewal are not provided; reopen the portal for a fresh connection.
+
+**Diagnostics › Check Desktop Access** performs one authenticated user-catalog read
+using the current portal browser login. It shows an access result and entry count;
+continue using the portal to launch a desktop. The check follows no redirects, exports
+no cookies and stops on navigation, Stop or leaving the portal. Ravada 2.4.6 may enqueue
+its normal desktop-preview refresh while serving this catalog; the client does not
+fetch those images or issue start/stop/clone actions. Fresh-ticket reconnect remains a later feature.
+
+The portal workflow was informed by [spice-mac](https://github.com/BeriBeli/spice-mac).
+This app continues to use its own Swift SPICE implementation and Metal renderer.
+
+## Automatically opening browser downloads
+
+Under **Settings › Downloads**, turn on **Open new .vv downloads automatically** and
+choose your browser’s download folder. Existing files are ignored. New connection files
+open after their contents stabilize and pass validation; browser temporary files are
+ignored. Existing warnings for unencrypted connections still apply.
+
+The helper runs while the app is running, including after all windows close. It stops
+when you quit or turn it off. Folder access lasts for the current app session, so choose
+the folder again after restarting. No login item or background service is installed.
+
 ## License
 
 [MIT](LICENSE). SPICE protocol constants come from the BSD-licensed
 [spice-protocol](https://gitlab.freedesktop.org/spice/spice-protocol) headers.
+
+## Built-in Help and capability coverage
+
+Choose **Help › MacOS Spice Client Help** (⌘?) or **Help** on Connections for the offline,
+searchable guide. It covers Ravada/My Desktops, Proxmox/.vv files, keyboard and windows,
+clipboard/file sending, audio/devices and troubleshooting. Help reuses the main window.
+
+The client has substantial native SPICE coverage, but full protocol parity is not
+claimed. See [the capability audit](docs/CLIENT_CAPABILITIES.md) for code evidence,
+server/guest prerequisites, limitations and prioritized correctness/performance work.
+
+The [development roadmap](docs/DEVELOPMENT_ROADMAP.md) orders the remaining work by
+correctness, reusable foundations and measured benefit, with a completion gate per slice.
