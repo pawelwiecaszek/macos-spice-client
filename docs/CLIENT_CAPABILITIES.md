@@ -27,7 +27,7 @@ connection files or guest contents were inspected during this audit.
 | Secure transport, proxy, ticket authentication | `Packages/SpiceKit/Sources/SpiceTransport/ChannelLinker.swift`; `SpiceSession.swift` | SPICE ticket auth supported; SASL-only servers are refused. Preserve per-file CA/subject validation and no TLS downgrade. |
 | Still images and caches | `SpiceChannels/ImageResolver.swift:38`; `Tests/SpiceChannelsTests/DisplayReplayTests.swift:45` | Raw/QUIC/LZ/GLZ/ZLIB-GLZ/LZ4/JPEG paths and captured replay tests exist. Cache ordering still needs the cross-channel fix below. |
 | Drawing commands | `SpiceChannels/DisplayChannel.swift:334` | `drawRop3`, `drawStroke`, `drawText`, `drawComposite` are dropped. Baseline ROP3/stroke/text are rendering-completeness gaps. Composite is not advertised in the current display-capability set; verify newer schema/capability semantics separately. |
-| Channel synchronization | `SpiceChannels/ChannelConnection.swift:90` | `WAIT_FOR_CHANNELS` is ignored. Official protocol requires waiting for listed channel/message serials; shared pixmap invalidation uses this ordering. |
+| Channel synchronization | `SpiceChannels/ChannelConnection.swift:90`; `DisplayChannel.swift:142,175` | `WAIT_FOR_CHANNELS` is ignored; separate resolvers use the same advertised pixmap/GLZ IDs, so cache ownership also needs resolution. Official protocol requires waiting for listed channel/message serials; shared pixmap invalidation uses this ordering. |
 | Video negotiation | `SpiceChannels/DisplayChannel.swift:57`, `:178`; `Tests/SpiceCodecsTests/VideoDecoderTests.swift:113` | Runtime hardware-supported H.264/H.265 plus MJPEG are advertised. VP8/VP9 are deliberately not advertised. Server encoder/profile compatibility still requires representative live streams. |
 | Video delivery | `SpiceCodecs/VideoDecoder.swift:59`, `:149`; `SpiceChannels/DisplayChannel.swift:441`; `App/Display/MetalRenderer.swift:121` | Hardware decode copies pixels to CPU surfaces and uploads them to Metal. No zero-copy CVMetalTextureCache path currently. Frame timestamps feed reports, not presentation scheduling. |
 | Playback / recording | `SpiceChannels/AudioChannels.swift:17`; `App/Session/AudioController.swift:94`, `:110`, `:131` | Playback latency is advertised but ignored by the app; playback timestamps are discarded. PCM/Opus playback and raw microphone capture exist. Opus microphone encoding is not enabled; record volume/mute integration needs verification. |
@@ -42,12 +42,16 @@ Short source paths in this table are under `Packages/SpiceKit/Sources/`;
 `Tests/…` paths are under `Packages/SpiceKit/`.
 Line numbers are audit anchors and can shift as fixes land.
 
-## Prioritized SPICE work
+## SPICE work slices
+
+The C identifiers name scopes, not mandatory execution order.
+[The development roadmap](DEVELOPMENT_ROADMAP.md) defines the current delivery order,
+hard dependencies, acceptance gates and rules for advancing past a blocked slice.
 
 | Priority | Work slice | Acceptance evidence |
 | --- | --- | --- |
 | C1: rendering correctness | Implement baseline ROP3/stroke/text semantics; establish composite capability/unsupported behavior explicitly. | Small synthetic wire fixtures, golden pixels, bounds/fuzz cases and representative sanitized server captures for each operation. No copied LGPL decoder/rendering code. |
-| C2: synchronization correctness | Honor cross-channel serial barriers and synchronized cache invalidation. | Two-channel ordering tests, missing/closed-channel handling, cancellation, bounded wait/deadlock behavior and real cache-sharing replay. |
+| C2: synchronization correctness | Resolve advertised cache/dictionary ownership and honor cross-channel serial barriers/invalidation. | Cache population/reference/invalidation, GLZ sharing or negotiated isolation, two-channel ordering, missing/closed channels, cancellation and stale completion after replacement; real replay when available. |
 | C3: truthful negotiation and media timing | Audit every advertised bit, connect playback minimum latency/actual device delay to multimedia time, and schedule/drop video frames appropriately. | Capability-to-handler matrix; timestamp wrap/reset, audio-route/rate changes, bounded buffers, A/V drift and stream-report validation. Verify newer STREAM_REPORT schema from pinned upstream source first. |
 | C4: monitor coverage | Consume monitor layouts and present individual heads from a single surface. | One/two heads on Linux and Windows, head unplug, scaling/Retina and correct pointer/display coordinates. |
 | C5: device / agent coverage | Exercise clipboard, file sending, USB/ISO/smartcard and audio on configured guests/hardware. | Positive and unavailable/denied cases, teardown/cancel and device ownership verified. Do not assume hardware support from wire tests. |

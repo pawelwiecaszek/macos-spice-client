@@ -217,3 +217,6 @@ clipboard/file sending, audio/devices and troubleshooting. Help reuses the main 
 The client has substantial native SPICE coverage, but full protocol parity is not
 claimed. See [the capability audit](docs/CLIENT_CAPABILITIES.md) for code evidence,
 server/guest prerequisites, limitations and prioritized correctness/performance work.
+
+The [development roadmap](docs/DEVELOPMENT_ROADMAP.md) orders the remaining work by
+correctness, reusable foundations and measured benefit, with a completion gate per slice.
