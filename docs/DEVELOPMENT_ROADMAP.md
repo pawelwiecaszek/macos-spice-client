@@ -116,7 +116,11 @@ setting, waits for awake/online availability and stops on login/permission/polic
 intentional server-close failures. Deterministic tests simulate availability instead
 of interrupting the host network.
 
-**Next:** live regression checks for the automatic build, including actual network/sleep
-recovery and signed-out reconnect when practical. After successful Phase 5 acceptance,
-the user requested a backed-up installation update and a separate Phase 5 PR. These
-remain pending; no installation or publication is included in this checkpoint.
+The user accepted Phase 5 after testing on 2026-11-11. Explicit live confirmations
+cover normal launch/input/resize, intentional server disconnect remaining ended, and
+same-window manual reconnect. The user subsequently reported that all their testing
+worked well; physical network/sleep scenarios were not independently observed by the
+agent. Automated tests cover those failure paths without changing the host network.
+
+**Next:** publish the accepted Phase 5 checkpoint and update the installed application
+with a verified backup, as requested; then begin Phase 6 permission-aware actions.
