@@ -102,10 +102,21 @@ application remains accepted Phase 4.
 Phase 5 manual fresh-ticket reconnect is now implemented locally using existing broker
 routes and same-window replacement. It captures original portal/address/login-store
 identity, reauthorizes an active desktop and carries a final authority check through
-asynchronous returns. It never starts/clones a desktop or retries automatically. Help
+asynchronous returns. It never starts/clones a desktop. Help
 includes recovery instructions. An existing authenticated portal document is required;
 closing it requires reopening and signing in as needed.
 
-**Next:** live C2 and manual reconnect regression checks; then bounded automatic Ravada
-recovery as a separate Phase 5 slice. No installed-app replacement or PR update is
-included in this local checkpoint.
+Manual launch/input/resize and same-window reconnect passed live testing. Portal logout
+left the established SPICE session usable, as expected. Signed-out reconnect remains
+pending because host network interruption was unavailable.
+
+Bounded automatic recovery is implemented locally as a separate Phase 5 slice. It
+reuses the eight-attempt backoff and fresh-ticket lease, honors the automatic-reconnect
+setting, waits for awake/online availability and stops on login/permission/policy or
+intentional server-close failures. Deterministic tests simulate availability instead
+of interrupting the host network.
+
+**Next:** live regression checks for the automatic build, including actual network/sleep
+recovery and signed-out reconnect when practical. After successful Phase 5 acceptance,
+the user requested a backed-up installation update and a separate Phase 5 PR. These
+remain pending; no installation or publication is included in this checkpoint.

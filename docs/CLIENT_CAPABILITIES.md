@@ -6,9 +6,9 @@ This is an implementation/evidence matrix, not a declaration of full SPICE parit
 **Conclusion:** the client already implements substantial native SPICE functionality,
 but it does not take full advantage of the protocol or every Ravada workflow. Missing
 drawing commands and A/V timing remain correctness/interoperability work. Cross-channel
-ordering now has a locally tested implementation; live acceptance remains pending. Lower-copy video presentation is a later optimization. Manual Ravada fresh-ticket
-reconnect now has local regression coverage; automatic recovery, native power controls
-and provisioning remain broker integration work.
+ordering now has a locally tested implementation; live acceptance remains pending. Lower-copy video presentation is a later optimization. Ravada fresh-ticket
+reconnect and bounded automatic recovery now have local regression coverage; native
+power controls and provisioning remain broker integration work.
 
 ## Evidence boundaries
 
@@ -76,7 +76,7 @@ Verified source baseline: tag v2.4.6, commit
 | Native search, favorites and Connect | Implemented and live accepted | `RavadaDesktopRow.swift`, `RavadaDesktopStore.swift`. Revalidate catalog access, wait for matching successful jobs and ready permitted display metadata, then parse the connection file. |
 | Owned stopped-desktop Start | Implemented and live accepted | Typed fixed route in `RavadaBrokerRequest.swift`; upstream `script/rvd_front:1423`, `:4784`. Submit once; no application retry after ambiguous sends. Cancel does not undo server work. |
 | Job and display discovery | Implemented with portal fallback | `RavadaJob.swift`, `RavadaMachineInfo.swift`; upstream `script/rvd_front:1105`, `:1735`, `:2510`; `Request.pm:371`. Management-only info must not be a catalog prerequisite; denied metadata offers the portal. |
-| Native fresh-ticket reconnect | Manual flow implemented and tested locally; live acceptance pending | `RavadaReconnectRequest.swift`, `RavadaSessionOrigin.swift`, `SessionController.swift`: capture original profile/address/login-store epoch, reauthorize an active desktop, fetch a fresh ticket and validate authority synchronously before same-window replacement. No Start/clone or automatic retry. Existing authenticated portal document required; sign-in/changed context offers portal recovery. Automatic recovery remains a later Phase 5 slice. |
+| Native fresh-ticket reconnect | Manual flow live accepted; bounded automatic recovery implemented locally, live acceptance pending | `RavadaReconnectRequest.swift`, `RavadaSessionOrigin.swift`, `SessionController.swift`: capture original profile/address/login-store epoch, reauthorize an active desktop, fetch a fresh ticket and validate authority synchronously before same-window replacement. No Start/clone. Eight-attempt transport recovery honors General settings, waits for awake/online availability, and retries only transient broker reads; permission, login and intentional server-close failures stop. Existing authenticated portal document required; sign-in/changed context offers portal recovery. Automated availability/cancellation/budget tests pass without interrupting the host network. Signed-out reconnect and actual network/sleep recovery live checks remain pending. |
 | Shutdown/reboot/resume/hibernate | Portal only for Ravada | Upstream routes `script/rvd_front:1321–1423`; permission flags `Front.pm:268–292`. Phase 6 must use server permissions, confirmations, job state and no mutation retries. Catalog convenience flags alone are not universal authorization. |
 | Clone/provision/restore, volatile desktops and shared access | Portal fallback | Clone route `script/rvd_front:1290` checks clone/public/access policy. Native self-service is later scope; do not infer permission from a visible base or automatically provision. |
 | User messages / notifications | Portal only | `script/rvd_front:2540–2552` exposes user messages; read/unread endpoints mutate message state. Later notification support needs privacy-safe content and a verified polling/WebSocket lifecycle. |

@@ -29,7 +29,7 @@ struct SessionOriginTests {
         #expect(controller.vmRef == nil)
         // Captured broker identity allows manual fresh-ticket requests, never power control.
         #expect(controller.canReconnect)
-        #expect(!controller.canReconnectAutomatically)
+        #expect(controller.canReconnectAutomatically)
         #expect(!controller.canControlPower)
     }
 

@@ -31,8 +31,8 @@ struct RavadaSessionReconnectTests {
         try await wait { pending.reply != nil }
         #expect(pending.calls == 1)
         #expect(controller.canReconnect)
-        #expect(!controller.canReconnectAutomatically)
-        #expect(controller.maxReconnectAttempts == 1)
+        #expect(controller.canReconnectAutomatically)
+        #expect(controller.maxReconnectAttempts == 8)
         controller.cancelReconnect()
         pending.reply?.resume(returning: RavadaReconnectTicket(profile: encryptedProfile()))
         pending.reply = nil

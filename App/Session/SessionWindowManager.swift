@@ -160,7 +160,7 @@ final class SessionWindowManager: NSObject, NSWindowDelegate {
         old.stop()
         windows.removeValue(forKey: old.id)
         let controller = SessionController(profile: profile, settings: old.sessionSettings, reconnect: context,
-                                           origin: old.origin, ravadaReconnect: old.ravadaReconnect)
+                                           origin: old.origin, recovery: old.recovery, ravadaReconnect: old.ravadaReconnect)
         let hosting = NSHostingController(rootView: SessionView(controller: controller))
         hosting.sceneBridgingOptions = [.toolbars, .title]
         let frame = window.frame
