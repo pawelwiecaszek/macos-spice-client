@@ -99,6 +99,13 @@ regressions; see [the pinned contract and acceptance boundary](CHANNEL_SYNCHRONI
 Automated completion and live acceptance are recorded separately. The installed
 application remains accepted Phase 4.
 
-**Next:** finish C2 review and live regression checks, then Phase 5 manual fresh-ticket
-reconnect using the existing broker and session-replacement paths. Automatic recovery
-follows only after the manual flow is verified.
+Phase 5 manual fresh-ticket reconnect is now implemented locally using existing broker
+routes and same-window replacement. It captures original portal/address/login-store
+identity, reauthorizes an active desktop and carries a final authority check through
+asynchronous returns. It never starts/clones a desktop or retries automatically. Help
+includes recovery instructions. An existing authenticated portal document is required;
+closing it requires reopening and signing in as needed.
+
+**Next:** live C2 and manual reconnect regression checks; then bounded automatic Ravada
+recovery as a separate Phase 5 slice. No installed-app replacement or PR update is
+included in this local checkpoint.

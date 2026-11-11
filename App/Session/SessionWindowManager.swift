@@ -21,7 +21,11 @@ final class SessionWindowManager: NSObject, NSWindowDelegate {
     /// The session of the key window, for menu commands.
     var keyController: SessionController? {
         guard let key = NSApp.keyWindow else { return nil }
-        return windows.values.first { $0.window === key }?.controller
+        return controller(for: key)
+    }
+
+    func controller(for window: NSWindow) -> SessionController? {
+        windows.values.first { $0.window === window }?.controller
     }
 
     // MARK: Opening files
@@ -156,7 +160,7 @@ final class SessionWindowManager: NSObject, NSWindowDelegate {
         old.stop()
         windows.removeValue(forKey: old.id)
         let controller = SessionController(profile: profile, settings: old.sessionSettings, reconnect: context,
-                                           origin: old.origin)
+                                           origin: old.origin, ravadaReconnect: old.ravadaReconnect)
         let hosting = NSHostingController(rootView: SessionView(controller: controller))
         hosting.sceneBridgingOptions = [.toolbars, .title]
         let frame = window.frame

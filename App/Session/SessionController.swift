@@ -70,10 +70,16 @@ final class SessionController: RemoteDisplayViewDelegate {
     @ObservationIgnored private var connectedAt: Date?
     @ObservationIgnored private var reconnectTask: Task<Void, Never>?
     @ObservationIgnored private var restoreTask: Task<Void, Never>?
+    @ObservationIgnored private var isStopped = false
+    @ObservationIgnored let ravadaReconnect: @MainActor (RavadaSessionOrigin) async throws -> RavadaReconnectTicket
 
     init(profile: ConnectionProfile, settings: AppSettings = .shared, reconnect: ReconnectContext? = nil,
-         origin: SessionOrigin? = nil) {
+         origin: SessionOrigin? = nil,
+         ravadaReconnect: @escaping @MainActor (RavadaSessionOrigin) async throws -> RavadaReconnectTicket = {
+             try await MainWindowController.shared.reconnectProfile(for: $0)
+         }) {
         self.profile = profile
+        self.ravadaReconnect = ravadaReconnect
         let resolvedOrigin = origin ?? .inferred(from: profile)
         self.origin = resolvedOrigin
         self.settings = settings
@@ -178,6 +184,7 @@ final class SessionController: RemoteDisplayViewDelegate {
     }
 
     func stop() {
+        isStopped = true
         reconnectTask?.cancel()
         restoreTask?.cancel()
         displayView?.stop()
@@ -199,8 +206,20 @@ final class SessionController: RemoteDisplayViewDelegate {
     /// Proxmox hands out fresh tickets through the API, and ticket-less servers take the
     /// same settings again. One-time tickets from a downloaded `.vv` are wiped after use.
     var canReconnect: Bool {
+        if case .ravada(let identity) = origin { return identity.hasMachineIdentity }
         if vmRef != nil, canControlPower { return true }
         return reusableProfile
+    }
+
+    /// Ravada recovery is manual until its fresh-ticket flow has live acceptance.
+    var canReconnectAutomatically: Bool {
+        if case .ravada = origin { return false }
+        return canReconnect
+    }
+
+    func openRavadaPortal() {
+        guard case .ravada(let identity) = origin else { return }
+        MainWindowController.shared.showPortal(profileID: identity.profileID)
     }
 
     /// The last failure, kept for the ended screen when reconnecting is cancelled.
@@ -220,7 +239,7 @@ final class SessionController: RemoteDisplayViewDelegate {
         let stable = connectedAt.map { Date.now.timeIntervalSince($0) >= Double(policy.stableAfter.components.seconds) } ?? false
         // A reconnection that didn't stay up continues the count; anything else starts over.
         let attempt = if let reconnect, !stable { reconnect.attempt + 1 } else { 1 }
-        if settings.reconnectAutomatically, canReconnect,
+        if settings.reconnectAutomatically, canReconnectAutomatically,
            policy.shouldReconnect(after: failure, wasConnected: wasConnected, reconnecting: reconnect != nil && !stable),
            policy.delay(beforeAttempt: attempt) != nil {
             if wasConnected { announce(String(localized: "Connection to \(title) lost. Reconnecting.")) }
@@ -246,7 +265,7 @@ final class SessionController: RemoteDisplayViewDelegate {
         guard let delay = policy.delay(beforeAttempt: attempt) else { return }
         reconnectTask?.cancel()
         reconnectTask = Task { [weak self] in
-            var progress = ReconnectProgress(attempt: attempt, maxAttempts: self?.policy.delays.count ?? 0)
+            var progress = ReconnectProgress(attempt: attempt, maxAttempts: self?.maxReconnectAttempts ?? 0)
             if !NetworkMonitor.shared.isOnline {
                 progress.waitingForNetwork = true
                 self?.phase = .reconnecting(progress)
@@ -264,7 +283,10 @@ final class SessionController: RemoteDisplayViewDelegate {
 
     /// Reconnects right away: the Reconnect button, "Try Now", and after starting the VM.
     func reconnectNow() {
+        guard !isStopped, canReconnect, phase != .connected else { return }
+        if case .reconnecting(let progress) = phase, progress.retryAt == nil, !progress.waitingForNetwork { return }
         let attempt = if case .reconnecting(let progress) = phase { progress.attempt } else { 1 }
+        phase = .reconnecting(ReconnectProgress(attempt: attempt, maxAttempts: maxReconnectAttempts))
         let carry = currentCarryOver()
         reconnectTask?.cancel()
         reconnectTask = Task { [weak self] in
@@ -272,7 +294,10 @@ final class SessionController: RemoteDisplayViewDelegate {
         }
     }
 
-    var maxReconnectAttempts: Int { policy.delays.count }
+    var maxReconnectAttempts: Int {
+        if case .ravada = origin { return 1 }
+        return policy.delays.count
+    }
 
     /// Stops reconnecting and shows why the session ended.
     func cancelReconnect() {
@@ -289,10 +314,20 @@ final class SessionController: RemoteDisplayViewDelegate {
     }
 
     private func attemptReconnect(attempt: Int, carry: SessionCarryOver) async {
-        phase = .reconnecting(ReconnectProgress(attempt: attempt, maxAttempts: policy.delays.count))
+        guard !Task.isCancelled, !isStopped else { return }
+        phase = .reconnecting(ReconnectProgress(attempt: attempt, maxAttempts: maxReconnectAttempts))
         let next: ConnectionProfile
         do {
-            if let vmRef, canControlPower {
+            if case .ravada(let identity) = origin {
+                let ticket = try await ravadaReconnect(identity)
+                // No await may separate this check from the same-window handoff.
+                try ticket.validate()
+                next = ticket.profile
+                // A broker metadata change must not silently weaken an encrypted session.
+                guard RavadaConnectionFile.preservesEncryption(from: profile, to: next) else {
+                    throw RavadaBrokerError.portalRequired
+                }
+            } else if let vmRef, canControlPower {
                 next = try await ProxmoxStore.shared.reconnectProfile(for: vmRef)
             } else if reusableProfile {
                 next = profile
@@ -310,15 +345,15 @@ final class SessionController: RemoteDisplayViewDelegate {
             // The Proxmox API didn't answer either: count it as a failed attempt.
             let message = (error as? any LocalizedError)?.errorDescription ?? error.localizedDescription
             lastFailureMessage = message
-            if settings.reconnectAutomatically, policy.delay(beforeAttempt: attempt + 1) != nil {
+            if settings.reconnectAutomatically, canReconnectAutomatically, policy.delay(beforeAttempt: attempt + 1) != nil {
                 scheduleReconnect(attempt: attempt + 1, carry: carry)
             } else {
-                endKind = .networkLost
+                if case .ravada = origin { endKind = .failed } else { endKind = .networkLost }
                 phase = .ended(message)
             }
             return
         }
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, !isStopped else { return }
         let context = ReconnectContext(attempt: attempt, carryOver: carry,
                                        lastFailure: lastFailureMessage ?? reconnect?.lastFailure)
         SessionWindowManager.shared.replace(self, with: next, context: context)

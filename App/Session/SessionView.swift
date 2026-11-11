@@ -148,7 +148,7 @@ struct SessionView: View {
                     .keyboardShortcut(.cancelAction)
                 Button("Try Now") { controller.reconnectNow() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(connecting)
+                    .disabled(connecting || (progress.retryAt == nil && !progress.waitingForNetwork))
             }
         }
         .padding(28)
@@ -183,6 +183,9 @@ struct SessionView: View {
             HStack {
                 Button("Close Window") { controller.window?.performClose(nil) }
                     .keyboardShortcut(ended.primary == nil ? .defaultAction : .cancelAction)
+                if case .ravada = controller.origin, ended.primary != .openPortal {
+                    Button("Open Portal") { controller.openRavadaPortal() }
+                }
                 switch ended.primary {
                 case .startAndReconnect:
                     Button("Start & Reconnect") { controller.startAndReconnect() }
@@ -197,6 +200,9 @@ struct SessionView: View {
                         ProxmoxStore.shared.pendingHost = controller.vmRef?.apiHost
                         MainWindowController.shared.showSettings(tab: 1)
                     }
+                case .openPortal:
+                    Button("Open Portal") { controller.openRavadaPortal() }
+                        .keyboardShortcut(.defaultAction)
                 case .openFile:
                     Button("Open Connection File…") { SessionWindowManager.shared.presentOpenPanel() }
                 case nil:
@@ -213,7 +219,7 @@ struct SessionView: View {
 /// Wording and the main action for a session that ended.
 @MainActor
 private struct EndedDescription {
-    enum Action { case startAndReconnect, reconnect, setUpProxmox, openFile }
+    enum Action { case startAndReconnect, reconnect, setUpProxmox, openFile, openPortal }
 
     let symbol: String
     let title: LocalizedStringKey
@@ -241,6 +247,9 @@ private struct EndedDescription {
         } else if controller.canReconnect {
             primary = .reconnect
             hint = nil
+        } else if case .ravada = controller.origin {
+            primary = .openPortal
+            hint = "Return to the original portal and choose this desktop again. Its machine identity could not be verified for reconnect."
         } else if controller.vmRef != nil {
             primary = .setUpProxmox
             hint = "Reconnecting needs a new ticket. Click SPICE in Proxmox again, or add this server under Settings › Proxmox so the app can reconnect by itself."

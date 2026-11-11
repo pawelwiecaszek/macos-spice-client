@@ -39,6 +39,44 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
     @ObservationIgnored private var cancelledNavigations: [WKNavigation] = []
     @ObservationIgnored private var launchGate = RavadaPortalLaunchGate()
 
+    @ObservationIgnored private var reconnectReader: RavadaBrowserTransport?
+    @ObservationIgnored private var brokerEpoch = UUID()
+    var hasReconnectRequest: Bool { reconnectReader != nil }
+
+    func reconnectProfile(for identity: RavadaSessionOrigin,
+                          validate: @escaping @MainActor () throws -> Void) async throws -> RavadaReconnectTicket {
+        guard RavadaPortalConfiguration.portalURL(identity.address) == portalURL,
+              let machineID = identity.machineID, machineID > 0 else { throw RavadaBrokerError.portalRequired }
+        guard !stopped, hasCommittedDocument, !isBusy, !catalogCheck.isChecking,
+              !requiresSignIn else { throw RavadaBrokerError.signInRequired }
+        guard reconnectReader == nil else { throw RavadaBrokerError.unavailable }
+        let epoch = brokerEpoch
+        let reader = try RavadaBrowserTransport(portalURL: portalURL, webView: webView)
+        reconnectReader = reader
+        defer { if reconnectReader === reader { reconnectReader = nil } }
+        let check: @MainActor () throws -> Void = { [weak self] in
+            try Task.checkCancellation()
+            guard let self, !self.stopped, self.brokerEpoch == epoch, !NSApp.isHidden else {
+                throw RavadaBrokerError.cancelled
+            }
+            try validate()
+        }
+        let profile = try await RavadaReconnectRequest.profile(machineID: machineID, request: { request in
+            try check()
+            let response = try await reader.request(request)
+            try check()
+            return response
+        }, validate: check)
+        try check()
+        return RavadaReconnectTicket(profile: profile, validate: check)
+    }
+
+    func cancelReconnectRead() {
+        brokerEpoch = UUID()
+        reconnectReader?.cancel()
+        reconnectReader = nil
+    }
+
     nonisolated static let maxConnectionFileBytes = 1024 * 1024
 
     init(portalURL: URL, dataStore: WKWebsiteDataStore? = nil,
@@ -59,10 +97,14 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
             return try await transport.catalog()
         }, cancel: { transport?.cancel() })
         super.init()
+        NotificationCenter.default.addObserver(self, selector: #selector(applicationDidHide),
+                                               name: NSApplication.didHideNotification, object: nil)
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
     }
+
+    @objc private func applicationDidHide() { cancelReconnectRead() }
 
     func load() {
         guard !stopped else { return }
@@ -75,6 +117,7 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
     }
 
     func cancelCurrentAction() {
+        cancelReconnectRead()
         catalogCheck.cancel()
         let wasBusy = isBusy
         if let currentNavigation {
@@ -187,6 +230,7 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         guard !stopped, isPresented, !cancelledNavigations.contains(where: { $0 === navigation }) else { return }
+        cancelReconnectRead()
         catalogCheck.cancel()
         currentNavigation = navigation
         failure = nil
@@ -218,6 +262,7 @@ final class RavadaPortalModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        cancelReconnectRead()
         updateNavigation()
         guard !stopped else { return }
         cancelDownload()

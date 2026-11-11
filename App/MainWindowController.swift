@@ -43,6 +43,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     func showCurrentPage() { present() }
 
     func showPortal(profileID: UUID? = nil) {
+        if page != .portal { model?.cancelReconnectRead() }
         if page == .desktops { desktopStore?.deactivate() }
         if let profileID {
             do { try portals.select(profileID) } catch { return }
@@ -62,7 +63,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
                               current.websiteDataStoreID == profile.websiteDataStoreID else { return false }
                         let settings = AppSettings.shared.applying(current.preferences)
                         return SessionWindowManager.shared.openSession(connection, settings: settings,
-                            origin: .ravada(profileID: profile.id, machineID: machineID))
+                            origin: .ravada(RavadaSessionOrigin(profile: profile, machineID: machineID)))
                     })
             } else {
                 model = nil
@@ -107,7 +108,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
                               let current = self?.portals.selectedProfile else { return false }
                         return SessionWindowManager.shared.openSession(connection,
                             settings: AppSettings.shared.applying(current.preferences),
-                            origin: .ravada(profileID: profile.id, machineID: machineID))
+                            origin: .ravada(RavadaSessionOrigin(profile: profile, machineID: machineID)))
                     })
             } catch { showPortal(profileID: profile.id); return }
         }
@@ -115,14 +116,30 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         desktopStore?.activate()
     }
 
+    /// Explicit VDI reconnect may read the preserved document while its portal UI is
+    /// paused. It never navigates a hidden portal or admits a browser download.
+    func reconnectProfile(for identity: RavadaSessionOrigin) async throws -> RavadaReconnectTicket {
+        guard let model, let displayedProfile, identity.matches(displayedProfile),
+              desktopStore?.isBusy != true else { throw RavadaBrokerError.signInRequired }
+        let validate: @MainActor () throws -> Void = { [weak self, weak model] in
+            guard let self, let model, self.model === model,
+                  self.portals.profiles.contains(where: identity.matches) else {
+                throw RavadaBrokerError.portalRequired
+            }
+        }
+        try validate()
+        return try await model.reconnectProfile(for: identity, validate: validate)
+    }
+
     private func canUseDesktopProfile(_ profile: RavadaPortalProfile) -> Bool {
-        guard page == .desktops, displayedProfile?.id == profile.id,
+        guard model?.hasReconnectRequest != true, page == .desktops, displayedProfile?.id == profile.id,
               let current = portals.selectedProfile else { return false }
         return current.id == profile.id && current.address == profile.address
             && current.websiteDataStoreID == profile.websiteDataStoreID
     }
 
     private func navigate(to page: Page) {
+        if self.page != page { model?.cancelReconnectRead() }
         if self.page == .portal && page != .portal { model?.pause() }
         if self.page == .desktops && page != .desktops { desktopStore?.deactivate() }
         self.page = page
@@ -159,7 +176,10 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         window = nil
     }
 
-    func windowDidMiniaturize(_ notification: Notification) { desktopStore?.deactivate() }
+    func windowDidMiniaturize(_ notification: Notification) {
+        model?.cancelReconnectRead()
+        desktopStore?.deactivate()
+    }
     func windowDidDeminiaturize(_ notification: Notification) {
         if page == .desktops { desktopStore?.activate() }
     }
@@ -182,6 +202,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     }
 
     func updated(from old: RavadaPortalProfile, to profile: RavadaPortalProfile) {
+        if displayedProfile?.id == old.id { model?.cancelReconnectRead() }
         if displayedProfile?.id == old.id { desktopStore?.deactivate(); desktopStore = nil }
         if old.address != profile.address || old.websiteDataStoreID != profile.websiteDataStoreID {
             clearPortalIfDisplaying(old.id)

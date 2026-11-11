@@ -6,7 +6,7 @@ enum SessionOrigin: Equatable, Sendable {
     case manual
     case proxmox(ProxmoxVMRef)
     /// The machine ID is absent when its authenticated display route was not recognized.
-    case ravada(profileID: UUID, machineID: Int?)
+    case ravada(RavadaSessionOrigin)
 
     /// Preserve the existing Proxmox recognition for callers without explicit context.
     static func inferred(from profile: ConnectionProfile) -> SessionOrigin {

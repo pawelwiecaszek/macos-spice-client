@@ -23,22 +23,23 @@ struct SessionOriginTests {
 
     @Test func ravadaContextDoesNotInferProxmoxFromConnectionFileFields() throws {
         let profile = try proxmoxProfile()
-        let origin = SessionOrigin.ravada(profileID: UUID(), machineID: 42)
+        let origin = SessionOrigin.ravada(RavadaSessionOrigin(profile: RavadaPortalProfile(name: "Test", address: "https://portal.example.invalid"), machineID: 42))
         let controller = SessionController(profile: profile, origin: origin)
         #expect(controller.origin == origin)
         #expect(controller.vmRef == nil)
-        // Provenance alone must not enable fresh-ticket reconnect or power control.
-        #expect(!controller.canReconnect)
+        // Captured broker identity allows manual fresh-ticket requests, never power control.
+        #expect(controller.canReconnect)
+        #expect(!controller.canReconnectAutomatically)
         #expect(!controller.canControlPower)
     }
 
     @Test func unrecognizedRavadaMachineKeepsProfileContextWithoutInventingIdentity() {
-        let origin = SessionOrigin.ravada(profileID: UUID(), machineID: nil)
+        let origin = SessionOrigin.ravada(RavadaSessionOrigin(profile: RavadaPortalProfile(name: "Test", address: "https://portal.example.invalid"), machineID: nil))
         let controller = SessionController(profile: ConnectionProfile(host: "guest.example.invalid"), origin: origin)
         #expect(controller.origin == origin)
         #expect(controller.vmRef == nil)
-        // Ticketless sessions retain their existing direct reconnect behavior.
-        #expect(controller.canReconnect)
+        // Ravada must never reuse a direct profile without verified machine identity.
+        #expect(!controller.canReconnect)
     }
 
     @Test func explicitManualContextOverridesProxmoxLookingFields() throws {

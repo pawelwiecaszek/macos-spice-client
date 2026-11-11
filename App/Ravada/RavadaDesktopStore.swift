@@ -170,18 +170,7 @@ final class RavadaDesktopStore: NSObject {
         progressMessage = String(localized: "Opening desktop connection…")
         let response = try await request(.connection(machineID: machineID, driver: display.driver, fileExtension: ext))
         try ensureCurrent(token, deadline: deadline)
-        try response.validate(mime: "application/x-virt-viewer")
-        let requiresTLS = display.driver == "spice-tls"
-        let profile = try await Task.detached {
-            var profile = try VVFileParser.parse(Array(response.data)).profile
-            if requiresTLS {
-                guard profile.tlsPort != nil, case .encrypted = profile.plaintextExposure else {
-                    throw RavadaBrokerError.portalRequired
-                }
-            }
-            profile.fullscreen = false
-            return profile
-        }.value
+        let profile = try await RavadaConnectionFile.profile(from: response, requiresTLS: display.driver == "spice-tls")
         try ensureCurrent(token, deadline: deadline)
         if !open(profile, machineID) { throw RavadaBrokerError.cancelled }
     }
