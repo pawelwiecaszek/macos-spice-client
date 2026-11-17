@@ -53,4 +53,18 @@ struct BenchmarkTests {
         print("Benchmark canvas ROP3 1080p x10: \(elapsed)")
     }
 
+    @Test func cosmeticStrokeThroughput() throws {
+        var surface = PixelBuffer(width: 1920, height: 1080)
+        let path = StrokePath(segments: [.init(flags: [.begin, .end], points: [
+            .init(x: 0, y: 0), .init(x: 1919 * 16, y: 1079 * 16)
+        ])])
+        let clock = ContinuousClock()
+        let elapsed = try clock.measure {
+            for _ in 0..<100 {
+                try surface.strokeSolid(path: path, brush: .color(0x00FF_FFFF), box: surface.bounds, clip: .none, mode: .opPut)
+            }
+        }
+        print("Benchmark cosmetic strokes 1080p x100: \(elapsed)")
+    }
+
 }

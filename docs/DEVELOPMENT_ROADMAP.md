@@ -132,5 +132,11 @@ replay coverage; see [the contract and evidence](ROP3_DRAWING.md). Live ROP3-spe
 capture acceptance is separate from ordinary launch checks. No installation or PR
 update is included in this local C1 slice.
 
-**Next:** finish ROP3 review and local acceptance, then implement stroke as its own
-bounded C1 slice. Keep the escape rule for unavailable captures/hardware.
+ROP3 automated verification and review are complete. Stroke slice A now implements
+solid cosmetic polylines/closed figures, with bounded wire decoding and raster work;
+see [stroke scope and remaining coverage](STROKE_DRAWING.md). Cubic and styled paths
+remain guarded pending their reference fixtures. Independent stroke review passed; live
+capture acceptance remains a separate gate.
+
+**Next:** cubic stroke flattening, styled strokes, then text. Keep the escape rule for
+unavailable captures/hardware; do not label partial stroke support as full C1 completion.

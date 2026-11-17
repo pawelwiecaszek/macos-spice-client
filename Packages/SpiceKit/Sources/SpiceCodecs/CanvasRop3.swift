@@ -106,13 +106,13 @@ extension PixelBuffer {
                                 } else {
                                     let px = ((x - Int(origin.x)) % pattern.width + pattern.width) % pattern.width
                                     let py = ((y - Int(origin.y)) % pattern.height + pattern.height) % pattern.height
-                                    patternValue = Self.rop3Packed(pat[py * pattern.width + px], format: targetFormat)
+                                    patternValue = RasterPixelFormat.pack(pat[py * pattern.width + px], format: targetFormat)
                                 }
                                 let index = y * destinationWidth + x
                                 let value = table.apply(pattern: patternValue,
-                                    source: Self.rop3Packed(sample, format: targetFormat),
-                                    destination: Self.rop3Packed(dst[index], format: targetFormat))
-                                dst[index] = Self.rop3Expanded(value, format: targetFormat)
+                                    source: RasterPixelFormat.pack(sample, format: targetFormat),
+                                    destination: RasterPixelFormat.pack(dst[index], format: targetFormat))
+                                dst[index] = RasterPixelFormat.expand(value, format: targetFormat)
                                 first = min(first, x); last = x + 1
                             }
                             if last > first {
@@ -126,27 +126,6 @@ extension PixelBuffer {
         return dirty
     }
 
-    @inline(__always)
-    private static func rop3Packed(_ pixel: UInt32, format: SurfaceFormat) -> UInt32 {
-        switch format {
-        case .x555: ((pixel >> 9) & 0x7C00) | ((pixel >> 6) & 0x03E0) | ((pixel >> 3) & 0x001F)
-        case .r565: ((pixel >> 8) & 0xF800) | ((pixel >> 5) & 0x07E0) | ((pixel >> 3) & 0x001F)
-        default: pixel
-        }
-    }
-
-    @inline(__always)
-    private static func rop3Expanded(_ pixel: UInt32, format: SurfaceFormat) -> UInt32 {
-        switch format {
-        case .x555: return pixelFrom555(UInt16(truncatingIfNeeded: pixel))
-        case .r565:
-            let green = (pixel >> 5) & 0x3F
-            return opaque(r: expand5((pixel >> 11) & 0x1F), g: (green << 2) | (green >> 4), b: expand5(pixel & 0x1F))
-        case .xRGB32: return pixel | 0xFF00_0000
-        default: return pixel
-        }
-    }
-
     private static func rop3Interpolated(_ source: UnsafeBufferPointer<UInt32>, sourceWidth: Int,
                                          area: Rect, box: Rect, bx: Int, by: Int, format: SurfaceFormat) -> UInt32 {
         let fx = (Double(bx) + 0.5) * Double(area.width) / Double(box.width) - 0.5 + Double(area.left)
@@ -157,10 +136,10 @@ extension PixelBuffer {
         let wx = UInt32(max(0, min(256, Int((fx - Double(x0)) * 256))))
         let wy = UInt32(max(0, min(256, Int((fy - Double(y0)) * 256))))
         // Native 16-bit targets quantize contributing samples before scaling.
-        let a = rop3Expanded(rop3Packed(source[y0 * sourceWidth + x0], format: format), format: format)
-        let b = rop3Expanded(rop3Packed(source[y0 * sourceWidth + x1], format: format), format: format)
-        let c = rop3Expanded(rop3Packed(source[y1 * sourceWidth + x0], format: format), format: format)
-        let d = rop3Expanded(rop3Packed(source[y1 * sourceWidth + x1], format: format), format: format)
+        let a = RasterPixelFormat.expand(RasterPixelFormat.pack(source[y0 * sourceWidth + x0], format: format), format: format)
+        let b = RasterPixelFormat.expand(RasterPixelFormat.pack(source[y0 * sourceWidth + x1], format: format), format: format)
+        let c = RasterPixelFormat.expand(RasterPixelFormat.pack(source[y1 * sourceWidth + x0], format: format), format: format)
+        let d = RasterPixelFormat.expand(RasterPixelFormat.pack(source[y1 * sourceWidth + x1], format: format), format: format)
         var result: UInt32 = 0
         for shift in stride(from: UInt32(0), to: 32, by: 8) {
             let top = ((a >> shift) & 255) * (256 - wx) + ((b >> shift) & 255) * wx

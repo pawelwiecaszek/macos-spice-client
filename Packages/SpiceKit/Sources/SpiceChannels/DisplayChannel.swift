@@ -293,6 +293,28 @@ public actor DisplayChannel {
                 $0.rop3(from: source, sourceArea: draw.sourceArea, brush: brush, box: draw.base.box,
                         clip: draw.base.clip, rop: draw.rop, scaleMode: draw.scaleMode, mask: mask, format: format)
             }
+        case .drawStroke:
+            let draw = try DrawStroke(decoding: payload)
+            guard !draw.attributes.isStyled else { throw ImageResolveError.unsupported("styled stroke") }
+            let brush: FillSource
+            switch draw.brush {
+            case .none: brush = .color(0)
+            case .solid(let color): brush = .color(color)
+            case .pattern(let image, let position):
+                guard let image else { throw WireError.invalidValue("stroke pattern") }
+                brush = .pattern(try resolve(image), origin: position)
+            }
+            guard let format = surfaces[draw.base.surfaceID]?.format else {
+                throw ImageResolveError.unsupported("stroke surface format")
+            }
+            do {
+                try mutate(draw.base) {
+                    try $0.strokeSolid(path: draw.path, brush: brush, box: draw.base.box,
+                                       clip: draw.base.clip, mode: draw.foreMode, format: format)
+                }
+            } catch StrokeError.workLimit { throw WireError.limitExceeded("stroke work budget") }
+            catch StrokeError.invalidPath { throw WireError.invalidValue("stroke path") }
+            catch { throw ImageResolveError.unsupported("stroke raster mode or path") }
         case .drawBlackness, .drawWhiteness, .drawInvers:
             let draw = try DrawMaskOnly(decoding: payload)
             let rop: Ropd = type == .drawBlackness ? .opBlackness : type == .drawWhiteness ? .opWhiteness : .opInvers
@@ -370,7 +392,7 @@ public actor DisplayChannel {
                 timeout: .milliseconds(Int(min(activate.timeoutMS, 60_000))))
         case .qualityIndicator, .glScanoutUnix, .glDraw:
             break  // not advertised
-        case .drawStroke, .drawText, .drawComposite:
+        case .drawText, .drawComposite:
             warnOnce(message.type, "unsupported draw command")
         }
     }
@@ -421,14 +443,14 @@ public actor DisplayChannel {
     }
 
     /// Applies a drawing operation to the target surface and records the dirty area.
-    private func mutate(_ base: DisplayBase, _ body: (inout PixelBuffer) -> Rect) {
+    private func mutate(_ base: DisplayBase, _ body: (inout PixelBuffer) throws -> Rect) rethrows {
         guard var state = surfaces[base.surfaceID] else {
             log.debug("draw to unknown surface \(base.surfaceID)")
             return
         }
         surfaces[base.surfaceID] = nil  // keep the buffer uniquely referenced while mutating
-        let changed = body(&state.buffer)
-        surfaces[base.surfaceID] = state
+        defer { surfaces[base.surfaceID] = state }
+        let changed = try body(&state.buffer)
         if base.surfaceID == primaryID, !changed.isEmpty { markDirty(changed) }
     }
 
