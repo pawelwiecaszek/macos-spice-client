@@ -263,6 +263,36 @@ public actor DisplayChannel {
                 $0.copy(from: source, sourceArea: draw.sourceArea, box: draw.base.box, clip: draw.base.clip,
                         rop: draw.rop, scaleMode: draw.scaleMode, mask: mask)
             }
+        case .drawRop3:
+            let draw = try DrawRop3(decoding: payload)
+            guard let image = draw.source else { throw WireError.invalidValue("ROP3 source image") }
+            let source = try resolve(image)
+            let brush: FillSource
+            switch draw.brush {
+            case .solid(let color): brush = .color(color)
+            case .pattern(let image, let position):
+                guard let image else { throw WireError.invalidValue("ROP3 pattern image") }
+                brush = .pattern(try resolve(image), origin: position)
+            case .none: throw WireError.invalidValue("ROP3 brush")
+            }
+            let mask: DrawMask?
+            if draw.mask.bitmap != nil {
+                guard let decoded = resolver.mask(for: draw.mask) else {
+                    throw ImageResolveError.unsupported("ROP3 mask bitmap")
+                }
+                mask = decoded
+            } else { mask = nil }
+            guard let format = surfaces[draw.base.surfaceID]?.format,
+                  [.xRGB32, .argb32, .x555, .r565].contains(format) else {
+                throw ImageResolveError.unsupported("ROP3 surface format")
+            }
+            guard surfaces[draw.base.surfaceID]?.buffer.rop3WorkIsBounded(box: draw.base.box, clip: draw.base.clip) == true else {
+                throw WireError.limitExceeded("ROP3 clip work budget")
+            }
+            mutate(draw.base) {
+                $0.rop3(from: source, sourceArea: draw.sourceArea, brush: brush, box: draw.base.box,
+                        clip: draw.base.clip, rop: draw.rop, scaleMode: draw.scaleMode, mask: mask, format: format)
+            }
         case .drawBlackness, .drawWhiteness, .drawInvers:
             let draw = try DrawMaskOnly(decoding: payload)
             let rop: Ropd = type == .drawBlackness ? .opBlackness : type == .drawWhiteness ? .opWhiteness : .opInvers
@@ -340,7 +370,7 @@ public actor DisplayChannel {
                 timeout: .milliseconds(Int(min(activate.timeoutMS, 60_000))))
         case .qualityIndicator, .glScanoutUnix, .glDraw:
             break  // not advertised
-        case .drawRop3, .drawStroke, .drawText, .drawComposite:
+        case .drawStroke, .drawText, .drawComposite:
             warnOnce(message.type, "unsupported draw command")
         }
     }

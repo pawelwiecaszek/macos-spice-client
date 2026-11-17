@@ -1,8 +1,8 @@
 # Client development order
 
-Updated: 2026-11-11. Execution plan for remaining work; supersedes the original
-phase-number order. Phases 1–4 stay accepted. Help is implemented/tested locally at
-`09c5cf0`; the installed app is accepted Phase 4. Publication is a separate decision.
+Updated: 2026-11-17. Execution plan for remaining work; supersedes the original
+phase-number order. Phases 1–5 are accepted; Phase 5, including Help and channel
+synchronization, is installed. [Draft PR #4](https://github.com/pawelwiecaszek/macos-spice-client/pull/4) records its dependency stack.
 
 ## Requirements summary
 
@@ -97,7 +97,7 @@ Source anchors are explained in the audit.
 C2 is implemented locally with wire, ordering, cancellation and cache-isolation
 regressions; see [the pinned contract and acceptance boundary](CHANNEL_SYNCHRONIZATION.md).
 Automated completion and live acceptance are recorded separately. The installed
-application remains accepted Phase 4.
+application is accepted Phase 5.
 
 Phase 5 manual fresh-ticket reconnect is now implemented locally using existing broker
 routes and same-window replacement. It captures original portal/address/login-store
@@ -122,5 +122,15 @@ same-window manual reconnect. The user subsequently reported that all their test
 worked well; physical network/sleep scenarios were not independently observed by the
 agent. Automated tests cover those failure paths without changing the host network.
 
-**Next:** publish the accepted Phase 5 checkpoint and update the installed application
-with a verified backup, as requested; then begin Phase 6 permission-aware actions.
+Phase 5 installation and draft PR publication are complete. The next unfinished slice
+follows the ordered table: C1 ROP3, then stroke/text, then C3 media correctness before
+Phase 6 permission-aware actions. This corrects the previous summary's premature jump
+to Phase 6.
+
+ROP3 is implemented locally with synthetic wire/pixel/display regressions and existing
+replay coverage; see [the contract and evidence](ROP3_DRAWING.md). Live ROP3-specific
+capture acceptance is separate from ordinary launch checks. No installation or PR
+update is included in this local C1 slice.
+
+**Next:** finish ROP3 review and local acceptance, then implement stroke as its own
+bounded C1 slice. Keep the escape rule for unavailable captures/hardware.

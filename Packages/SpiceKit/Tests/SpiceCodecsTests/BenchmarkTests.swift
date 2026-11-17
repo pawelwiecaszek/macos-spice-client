@@ -38,4 +38,19 @@ struct BenchmarkTests {
         }
         print("Benchmark canvas copy 1080p x10: \(elapsed)")
     }
+
+    @Test func canvasRop3Throughput() {
+        var surface = PixelBuffer(width: 1920, height: 1080)
+        let source = PixelBuffer(width: 1920, height: 1080, fill: 0xFF12_3456)
+        let clock = ContinuousClock()
+        let elapsed = clock.measure {
+            for _ in 0..<10 {
+                surface.rop3(from: source, sourceArea: source.bounds, brush: .color(0x0011_2233),
+                             box: surface.bounds, clip: .none, rop: 0x96)
+            }
+        }
+        #expect(surface[0, 0] == 0xFF00_0000)
+        print("Benchmark canvas ROP3 1080p x10: \(elapsed)")
+    }
+
 }
