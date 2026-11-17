@@ -13,12 +13,19 @@ struct StrokeDisplayTests {
         #expect(result.surface.pixels.dropFirst(5).allSatisfy { $0 == 0xFF00_0000 })
     }
 
-    @Test func styledAndCubicPathsRejectWithoutPaintingAPartialFigure() async throws {
-        for message in [stroke(styled: true), stroke(curve: true)] {
+    @Test func styledPathsRejectWithoutPaintingAPartialFigure() async throws {
+        for message in [stroke(styled: true)] {
             let result = try await replay(message)
             #expect(result.errors == 1)
             #expect(result.surface.pixels.allSatisfy { $0 == 0xFF00_0000 })
         }
+    }
+
+    @Test func mixedStraightAndCubicWireSegmentsRenderWithoutDecodeErrors() async throws {
+        let result = try await replay(stroke(curve: true))
+        #expect(result.errors == 0)
+        #expect(result.surface.pixels.filter { $0 != 0xFF00_0000 }.count > 4)
+        #expect(Array(result.surface.pixels.prefix(4)) == Array(repeating: 0xFFFF_0000, count: 4))
     }
 
     private func replay(_ message: SpiceMessage) async throws -> (surface: PixelBuffer, errors: Int) {

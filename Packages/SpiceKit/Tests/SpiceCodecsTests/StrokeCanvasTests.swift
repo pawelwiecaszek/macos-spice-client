@@ -64,7 +64,7 @@ struct StrokeCanvasTests {
         #expect(target.pixels == [0xEDCB_A987, 0xEDCB_A987])
     }
 
-    @Test func excessiveWorkAndUnsupportedCurveLeaveAllPixelsUnchanged() throws {
+    @Test func excessiveWorkLeavesAllPixelsUnchanged() throws {
         var target = PixelBuffer(width: 1, height: 1)
         let lines = Array(repeating: StrokeSegment(flags: [.begin, .end], points: [.init(x: 0, y: 0), .init(x: 16, y: 0)]), count: 129)
         #expect(throws: StrokeError.workLimit) {
@@ -72,12 +72,7 @@ struct StrokeCanvasTests {
                                    clip: .rects(Array(repeating: target.bounds, count: 65_536)), mode: .opPut)
         }
         #expect(target[0, 0] == 0xFF00_0000)
-        let p = StrokePoint(x: 0, y: 0)
-        #expect(throws: StrokeError.unsupported) {
-            try target.strokeSolid(path: .init(segments: [.init(flags: [.begin, .end, .bezier], points: [p, p, p, p])]),
-                                   brush: .color(.max), box: target.bounds, clip: .none, mode: .opPut)
-        }
-        #expect(target[0, 0] == 0xFF00_0000)
+
     }
 
     @Test func directLineSamplingMatchesAnIncrementalOracleInEveryOctant() {

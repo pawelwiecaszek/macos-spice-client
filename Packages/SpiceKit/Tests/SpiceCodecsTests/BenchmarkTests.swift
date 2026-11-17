@@ -67,4 +67,18 @@ struct BenchmarkTests {
         print("Benchmark cosmetic strokes 1080p x100: \(elapsed)")
     }
 
+    @Test func cubicStrokeThroughput() throws {
+        var surface = PixelBuffer(width: 65, height: 65)
+        let path = StrokePath(segments: [.init(flags: [.begin, .end, .bezier], points: [
+            .init(x: 0, y: 0), .init(x: 0, y: 1024), .init(x: 1024, y: 1024), .init(x: 1024, y: 0)
+        ])])
+        let clock = ContinuousClock()
+        let elapsed = try clock.measure {
+            for _ in 0..<100 {
+                try surface.strokeSolid(path: path, brush: .color(.max), box: surface.bounds, clip: .none, mode: .opPut)
+            }
+        }
+        print("Benchmark cubic strokes x100: \(elapsed)")
+    }
+
 }

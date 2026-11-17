@@ -1,9 +1,9 @@
 # Stroke drawing: solid cosmetic paths
 
-C1 stroke slice A, 2026-11-17. Implements solid one-pixel polylines and closed
-figures. Cubic paths and styled strokes are decoded, validated and rejected as a
-whole until their next rasterization slices have reference fixtures. They never
-leave a partially painted figure. Text remains a separate C1 slice.
+C1 stroke slices A–B, 2026-11-17. Implements solid one-pixel polylines, cubic curves
+and closed figures. Styled strokes remain rejected as a whole until their separate
+rasterization slice has reference fixtures. No failure leaves a partially painted
+figure. Text remains a separate C1 slice.
 
 ## Verified contract
 
@@ -28,7 +28,10 @@ lengths, known flags, path state and cubic control groups before rendering. Styl
 arrays have the wire byte-count bound and positive lengths. A stroke preflight limits
 visible-step/clip tests to 8 Mi visits before modifying any pixel. Rendering visits
 only the visible major-axis range, so huge offscreen coordinates do not produce huge
-line-walking loops. Invalid or unsupported operations preserve the target surface.
+line-walking loops. Cubic planning also caps a draw at 65,536 subdivision visits,
+65,536 generated endpoints and depth 32; the visible line plan is capped at 65,536
+entries. All budgets apply before painting. Invalid or unsupported operations preserve
+the target surface.
 
 ## Evidence and remaining work
 
@@ -38,11 +41,12 @@ clip unions, offscreen skipping, patterned/aliased brushes, native formats and r
 operations. Work-limit and unsupported-path tests require unchanged pixels. End-to-end
 synthetic display tests failed against the skipped command before integration and now
 exercise wire-to-surface behavior. Existing ROP3 and real-server image replays protect
-the shared-helper move.
+the shared-helper move. [Cubic contract and oracle fixtures](CUBIC_STROKES.md) cover
+rounded continuation, quantized subdivision, clipping and degenerate curves.
 
 Independent review passed after adding an inversion-only descriptor fallback regression.
 Live stroke-specific captures remain pending. Follow-up slices
-must establish cubic flattening and styled/dash reference pixels, including gap and
-background semantics, before enabling those paths. Ordinary desktop launch alone does
+must establish styled/dash reference pixels, including gap and background semantics,
+before enabling those paths. Ordinary desktop launch alone does
 not prove that a server emitted any stroke command. The installed Phase 5 app and its
 PR remain unchanged by this local slice.

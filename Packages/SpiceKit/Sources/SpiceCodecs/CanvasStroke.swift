@@ -8,15 +8,14 @@ public enum StrokeError: Error, Equatable, Sendable {
 }
 
 extension PixelBuffer {
-    /// Draws one-pixel, endpoint-exclusive solid cosmetic polylines and closed figures.
-    /// Cubic and styled paths are deliberately rejected until their separate raster
-    /// contracts have fixture coverage. Clips form a union; path intersections retain
+    /// Draws one-pixel, endpoint-exclusive solid cosmetic lines, cubics and closed figures.
+    /// Curves are flattened with bounded fixed-point planning before pixels change.
+    /// Styled paths remain a separate rendering contract. Clips form a union; path intersections retain
     /// the normal repeated raster operation, while shared endpoints are drawn once.
     @discardableResult
     public mutating func strokeSolid(path: StrokePath, brush: FillSource, box: Rect, clip: Clip,
                                      mode: Ropd, format: SurfaceFormat? = nil) throws(StrokeError) -> Rect {
         do { try path.validate() } catch { throw .invalidPath }
-        guard !path.segments.contains(where: { $0.flags.contains(.bezier) }) else { throw .unsupported }
         let targetFormat = format ?? (hasAlpha ? .argb32 : .xRGB32)
         guard [.xRGB32, .argb32, .x555, .r565].contains(targetFormat), mode.rawValue & ~UInt16(0x7FF) == 0 else { throw .unsupported }
         let operations = mode.rawValue & 0x3F8
@@ -27,22 +26,34 @@ extension PixelBuffer {
         let region = rects.reduce(empty) { $0.union($1) }
         var lines: [(CosmeticLine, Range<Int>)] = []
         var current: Point?, first: Point?, work = 0
+        var curveBudget = CubicStroke.Budget()
+        func connect(to endpoint: Point) throws(StrokeError) {
+            if let start = current {
+                let line = CosmeticLine(from: start, to: endpoint)
+                try Self.append(line, steps: line.visibleSteps(in: region), clipCount: rects.count,
+                                into: &lines, work: &work)
+            }
+            current = endpoint
+        }
         for segment in path.segments {
-            for (index, point) in segment.points.enumerated() {
-                let rounded = point.rounded
-                if index == 0, segment.flags.contains(.begin) { current = rounded; first = rounded; continue }
-                if let start = current {
-                    let line = CosmeticLine(from: start, to: rounded)
-                    let steps = line.visibleSteps(in: region)
-                    try append(line, steps: steps, clipCount: rects.count, into: &lines, work: &work)
+            var index = 0
+            if segment.flags.contains(.begin) {
+                current = segment.points[0].rounded; first = current; index = 1
+            }
+            if segment.flags.contains(.bezier) {
+                while index < segment.points.count {
+                    guard let start = current else { throw .invalidPath }
+                    let controls = (segment.points[index], segment.points[index + 1], segment.points[index + 2])
+                    let endpoints = try CubicStroke.flatten(from: start, controls: controls,
+                                                            visible: region, budget: &curveBudget)
+                    for endpoint in endpoints { try connect(to: endpoint) }
+                    index += 3
                 }
-                current = rounded
+            } else {
+                for point in segment.points.dropFirst(index) { try connect(to: point.rounded) }
             }
             if segment.flags.contains(.end) {
-                if segment.flags.contains(.close), let current, let first {
-                    let line = CosmeticLine(from: current, to: first)
-                    try append(line, steps: line.visibleSteps(in: region), clipCount: rects.count, into: &lines, work: &work)
-                }
+                if segment.flags.contains(.close), let first { try connect(to: first) }
                 current = nil; first = nil
             }
         }
@@ -53,6 +64,7 @@ extension PixelBuffer {
             guard image.width > 0, image.height > 0 else { throw .invalidPath }
             pattern = image; origin = position; solid = nil
         }
+        guard !lines.isEmpty else { return empty }
         var dirty = empty
         let rowWidth = width
         pixels.withUnsafeMutableBufferPointer { destination in
@@ -78,12 +90,15 @@ extension PixelBuffer {
         return dirty
     }
 
-    private func append(_ line: CosmeticLine, steps: Range<Int>, clipCount: Int,
+    private static func append(_ line: CosmeticLine, steps: Range<Int>, clipCount: Int,
                         into lines: inout [(CosmeticLine, Range<Int>)], work: inout Int) throws(StrokeError) {
         let visits = steps.count.multipliedReportingOverflow(by: clipCount)
         guard !visits.overflow, visits.partialValue <= 8 * 1024 * 1024 - work else { throw .workLimit }
         work += visits.partialValue
-        if !steps.isEmpty { lines.append((line, steps)) }
+        if !steps.isEmpty {
+            guard lines.count < 65_536 else { throw .workLimit }
+            lines.append((line, steps))
+        }
     }
 
     private static func strokeRop(_ mode: Ropd, brush: UInt32, destination: UInt32) -> UInt32 {
