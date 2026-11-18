@@ -1,8 +1,8 @@
 import SpiceWire
 
 extension PixelBuffer {
-    /// Renders verified axis-aligned width-one geometric styled figures. Gaps stay
-    /// transparent; diagonal and cubic styled paths remain unsupported. Phase
+    /// Renders axis-aligned figures and standalone diagonal geometric strokes.
+    /// Gaps stay transparent; diagonal joins and cubic styles remain unsupported. Phase
     /// includes complete offscreen segments and resets at each figure boundary.
     @discardableResult
     public mutating func strokeStyled(path: StrokePath, attributes: StrokeAttributes, brush: FillSource,
@@ -15,7 +15,7 @@ extension PixelBuffer {
         let rects = paintRects(box: box, clip: clip)
         let empty = Rect(x: 0, y: 0, width: 0, height: 0)
         guard !rects.isEmpty else { return empty }
-        let plan = try StyledAxisPlan(path: path, rects: rects, dash: dash)
+        let plan = try StyledStrokePlan(path: path, rects: rects, dash: dash)
         guard !plan.coverage.isEmpty else { return empty }
         let area = plan.region.width.multipliedReportingOverflow(by: plan.region.height)
         guard !area.overflow, area.partialValue <= pixels.count else { throw .workLimit }
@@ -63,11 +63,16 @@ extension PixelBuffer {
                     activeFigure = item.figure
                 }
                 switch item {
-                case .span(let span, let coordinates):
-                    for coordinate in coordinates where dash.isForeground(at: span.distance(at: coordinate)) {
-                        paint(x: span.horizontal ? coordinate : span.fixed, y: span.horizontal ? span.fixed : coordinate)
+                case .axis(let axis, _):
+                    switch axis {
+                    case .span(let span, let coordinates):
+                        for coordinate in coordinates where dash.isForeground(at: span.distance(at: coordinate)) {
+                            paint(x: span.horizontal ? coordinate : span.fixed, y: span.horizontal ? span.fixed : coordinate)
+                        }
+                    case .join(let point, _): paint(x: Int(point.x), y: Int(point.y))
                     }
-                case .join(let point, _): paint(x: Int(point.x), y: Int(point.y))
+                case .diagonal(let span, let y, let coordinates, _):
+                    for x in coordinates where span.contains(x: x, y: y, dash: dash) { paint(x: x, y: y) }
                 }
             }
         }

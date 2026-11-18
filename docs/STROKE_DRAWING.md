@@ -2,7 +2,7 @@
 
 C1 stroke slices A–B, 2026-11-17. Implements solid one-pixel polylines, cubic curves
 and closed figures. [Axis-aligned styled figures](STYLED_STROKES.md) now have reference
-fixtures and bounded rendering; diagonal and curved styled strokes remain rejected as
+fixtures and bounded rendering, along with standalone diagonal styles; joined diagonal and curved styled strokes remain rejected as
 a whole until their separate rasterization slice is verified. No failure leaves a partially painted
 figure. Text remains a separate C1 slice.
 
