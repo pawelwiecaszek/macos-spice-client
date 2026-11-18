@@ -7,18 +7,26 @@ public enum TextRasterError: Error, Equatable, Sendable {
 }
 
 extension PixelBuffer {
-    /// Bottom-up MSB-first monochrome glyphs with opaque solid brushes. Glyph
-    /// coverage is united before foreground painting; background uses COPY.
+    /// Bottom-up A1/A4 glyphs. Coverage is united with maximum alpha before
+    /// foreground OVER; background uses COPY. Patterns are snapshots.
     @discardableResult
-    public mutating func textA1(_ string: RasterString, foreground: UInt32?, background: UInt32?,
+    public mutating func text(_ string: RasterString, foreground: FillSource?, background: FillSource?,
                                 backgroundArea: Rect, box: Rect, clip: Clip, mode: Ropd,
                                 format: SurfaceFormat? = nil) throws(TextRasterError) -> Rect {
         do { try string.validate() }
         catch WireError.limitExceeded { throw .workLimit }
         catch { throw .invalidGlyphs }
         let target = format ?? (hasAlpha ? .argb32 : .xRGB32)
-        guard string.format == .a1, !string.topDown, mode == .opPut,
+        guard [.a1, .a4].contains(string.format), !string.topDown, mode == .opPut,
               [.xRGB32, .argb32, .x555, .r565].contains(target) else { throw .unsupported }
+        let native16 = target == .x555 || target == .r565
+        if native16, string.format != .a1 { throw .unsupported }
+        for brush in [foreground, background] {
+            if case .pattern(let image, _) = brush {
+                guard !native16 else { throw .unsupported }
+                guard image.width > 0, image.height > 0 else { throw .invalidGlyphs }
+            }
+        }
         let empty = Rect(x: 0, y: 0, width: 0, height: 0)
         let rects = paintRects(box: box, clip: clip)
         guard !rects.isEmpty else { return empty }
@@ -52,32 +60,54 @@ extension PixelBuffer {
         for (glyph, bounds) in zip(string.glyphs, glyphBounds) {
             let cropped = bounds.intersection(maskBounds)
             guard !cropped.isEmpty else { continue }
-            let stride = (glyph.width + 7) / 8
+            let stride = (glyph.width * string.format.bitsPerPixel + 7) / 8
             for y in Int(cropped.top)..<Int(cropped.bottom) {
                 let row = glyph.height - 1 - (y - Int(bounds.top))
                 for x in Int(cropped.left)..<Int(cropped.right) {
                     let column = x - Int(bounds.left)
-                    if glyph.data[row * stride + column / 8] & (0x80 >> (column & 7)) != 0 {
-                        coverage[(y - Int(maskBounds.top)) * maskBounds.width + x - Int(maskBounds.left)] = 1
+                    let value: UInt8
+                    if string.format == .a1 {
+                        value = glyph.data[row * stride + column / 8] & (0x80 >> (column & 7)) != 0 ? 255 : 0
+                    } else {
+                        let byte = glyph.data[row * stride + column / 2]
+                        value = column & 1 == 0 ? byte & 0xF0 : (byte & 0x0F) << 4
                     }
+                    let index = (y - Int(maskBounds.top)) * maskBounds.width + x - Int(maskBounds.left)
+                    coverage[index] = max(coverage[index], value)
                 }
             }
         }
-        let fore = foreground.map { RasterPixelFormat.expand($0, format: target) | 0xFF00_0000 }
-        let back = background.map { RasterPixelFormat.expand($0, format: target) | 0xFF00_0000 }
+        func sample(_ brush: FillSource, x: Int, y: Int) -> UInt32 {
+            switch brush {
+            case .color(let value): return RasterPixelFormat.expand(value, format: target) | 0xFF00_0000
+            case .pattern(let image, let origin):
+                let px = ((x - Int(origin.x)) % image.width + image.width) % image.width
+                let py = ((y - Int(origin.y)) % image.height + image.height) % image.height
+                let value = image.pixels[py * image.width + px]
+                return image.hasAlpha ? value : value | 0xFF00_0000
+            }
+        }
         var dirty = empty
         for y in Int(paintBounds.top)..<Int(paintBounds.bottom) {
             for x in Int(paintBounds.left)..<Int(paintBounds.right) {
                 guard rects.contains(where: { x >= Int($0.left) && x < Int($0.right) &&
                     y >= Int($0.top) && y < Int($0.bottom) }) else { continue }
                 var color: UInt32?
-                if let back, x >= Int(backBounds.left), x < Int(backBounds.right),
-                   y >= Int(backBounds.top), y < Int(backBounds.bottom) { color = back }
-                if let fore, x >= Int(maskBounds.left), x < Int(maskBounds.right),
-                   y >= Int(maskBounds.top), y < Int(maskBounds.bottom),
-                   coverage[(y - Int(maskBounds.top)) * maskBounds.width + x - Int(maskBounds.left)] != 0 { color = fore }
+                if let background, x >= Int(backBounds.left), x < Int(backBounds.right),
+                   y >= Int(backBounds.top), y < Int(backBounds.bottom) {
+                    color = sample(background, x: x, y: y)
+                }
+                if let foreground, x >= Int(maskBounds.left), x < Int(maskBounds.right),
+                   y >= Int(maskBounds.top), y < Int(maskBounds.bottom) {
+                    let alpha = coverage[(y - Int(maskBounds.top)) * maskBounds.width + x - Int(maskBounds.left)]
+                    if alpha != 0 {
+                        let source = sample(foreground, x: x - Int(total.left), y: y - Int(total.top))
+                        color = Self.blendOver(source: source, destination: color ?? pixels[y * width + x],
+                                               globalAlpha: UInt32(alpha))
+                    }
+                }
                 if let color {
-                    pixels[y * width + x] = color
+                    pixels[y * width + x] = target == .xRGB32 ? color | 0xFF00_0000 : color
                     dirty = dirty.union(Rect(x: x, y: y, width: 1, height: 1))
                 }
             }

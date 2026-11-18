@@ -14,6 +14,14 @@ struct TextDisplayTests {
         #expect(result.surface[0,0] == 0xFF000000)
     }
 
+    @Test func antialiasedWireTextBlendsOverBackground() async throws {
+        let result = try await replay(flags: 2)
+        #expect(result.errors == 0)
+        #expect(result.surface[1,1] == 0xFFA0005F)
+        #expect(result.surface[1,2] == 0xFF4000BF)
+        #expect(result.surface[2,1] == 0xFF0000FF)
+    }
+
     @Test func unsupportedTopDownTextLeavesBackgroundUntouched() async throws {
         let result = try await replay(flags: 9)
         #expect(result.errors == 1)
@@ -39,7 +47,8 @@ struct TextDisplayTests {
         writer.writeU16(Ropd.opPut.rawValue); writer.writeU16(Ropd.opXor.rawValue)
         writer.writeU16(1); writer.writeU8(flags)
         for value: Int32 in [2,2,-1,-1] { writer.writeI32(value) }
-        writer.writeU16(3); writer.writeU16(2); writer.writeBytes([0x40,0xA0])
+        writer.writeU16(3); writer.writeU16(2)
+        writer.writeBytes(flags == 2 ? [0x40,0x00,0xA0,0x00] : [0x40,0xA0])
         var ping = ByteWriter(); ping.writeU32(1); ping.writeU64(0)
         try await server.send(SpiceMessage(type: DisplayServerMessage.surfaceCreate.rawValue,payload: create.bytes).encode() +
             SpiceMessage(type: DisplayServerMessage.drawText.rawValue,payload: writer.bytes).encode() +

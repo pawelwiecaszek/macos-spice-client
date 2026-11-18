@@ -397,23 +397,22 @@ public actor DisplayChannel {
             break  // not advertised
         case .drawText:
             let draw = try DrawText(decoding: payload)
-            let foreground: UInt32?, background: UInt32?
-            switch draw.foregroundBrush {
-            case .none: foreground = nil
-            case .solid(let color): foreground = color
-            case .pattern: throw ImageResolveError.unsupported("text pattern brush")
+            func textBrush(_ brush: Brush) throws -> FillSource? {
+                switch brush {
+                case .none: return nil
+                case .solid(let color): return .color(color)
+                case .pattern(let image, let origin):
+                    guard let image else { throw WireError.invalidValue("text pattern") }
+                    return .pattern(try resolve(image), origin: origin)
+                }
             }
-            switch draw.backgroundBrush {
-            case .none: background = nil
-            case .solid(let color): background = color
-            case .pattern: throw ImageResolveError.unsupported("text pattern brush")
-            }
+            let foreground = try textBrush(draw.foregroundBrush), background = try textBrush(draw.backgroundBrush)
             guard let format = surfaces[draw.base.surfaceID]?.format else {
                 throw ImageResolveError.unsupported("text surface format")
             }
             do {
                 try mutate(draw.base) {
-                    try $0.textA1(draw.string, foreground: foreground, background: background,
+                    try $0.text(draw.string, foreground: foreground, background: background,
                                   backgroundArea: draw.backgroundArea, box: draw.base.box,
                                   clip: draw.base.clip, mode: draw.foreMode, format: format)
                 }
