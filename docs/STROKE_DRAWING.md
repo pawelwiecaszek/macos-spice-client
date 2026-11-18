@@ -4,7 +4,7 @@ C1 stroke slices A–B, 2026-11-17. Implements solid one-pixel polylines, cubic 
 and closed figures. [Styled figures](STYLED_STROKES.md) also have reference fixtures
 and bounded rendering, including diagonal joins and complete cubic subdivision.
 Unsupported metadata and exhausted budgets reject the complete draw before painting.
-Text remains a separate C1 slice.
+[Text](TEXT_DRAWING.md) remains a separate C1 slice with partial A1 support.
 
 ## Verified contract
 

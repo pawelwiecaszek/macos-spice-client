@@ -395,7 +395,32 @@ public actor DisplayChannel {
                 timeout: .milliseconds(Int(min(activate.timeoutMS, 60_000))))
         case .qualityIndicator, .glScanoutUnix, .glDraw:
             break  // not advertised
-        case .drawText, .drawComposite:
+        case .drawText:
+            let draw = try DrawText(decoding: payload)
+            let foreground: UInt32?, background: UInt32?
+            switch draw.foregroundBrush {
+            case .none: foreground = nil
+            case .solid(let color): foreground = color
+            case .pattern: throw ImageResolveError.unsupported("text pattern brush")
+            }
+            switch draw.backgroundBrush {
+            case .none: background = nil
+            case .solid(let color): background = color
+            case .pattern: throw ImageResolveError.unsupported("text pattern brush")
+            }
+            guard let format = surfaces[draw.base.surfaceID]?.format else {
+                throw ImageResolveError.unsupported("text surface format")
+            }
+            do {
+                try mutate(draw.base) {
+                    try $0.textA1(draw.string, foreground: foreground, background: background,
+                                  backgroundArea: draw.backgroundArea, box: draw.base.box,
+                                  clip: draw.base.clip, mode: draw.foreMode, format: format)
+                }
+            } catch TextRasterError.workLimit { throw WireError.limitExceeded("text work budget") }
+            catch TextRasterError.invalidGlyphs { throw WireError.invalidValue("text glyphs") }
+            catch { throw ImageResolveError.unsupported("text glyph format or mode") }
+        case .drawComposite:
             warnOnce(message.type, "unsupported draw command")
         }
     }

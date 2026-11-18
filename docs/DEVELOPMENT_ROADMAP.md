@@ -139,5 +139,8 @@ see [stroke scope and remaining coverage](STROKE_DRAWING.md). Slice B adds bound
 diagonal segments and their joins. Curved styled paths now use bounded complete subdivision with reference pixel coverage. Independent stroke review passed; live
 capture acceptance remains a separate gate.
 
-**Next:** text rendering. Keep the escape rule for
+Monochrome A1 text with solid brushes now has bounded decoding and rendering; see
+[text scope](TEXT_DRAWING.md).
+
+**Next:** antialiased text and text patterns. Keep the escape rule for
 unavailable captures/hardware; do not label partial stroke support as full C1 completion.
