@@ -1,6 +1,6 @@
 import SpiceWire
 
-/// Bounded fixed-point subdivision for solid cosmetic cubic strokes. This helper
+/// Bounded fixed-point subdivision for cubic stroke paths. This helper
 /// produces endpoints only; the caller completes all planning before touching pixels.
 enum CubicStroke {
     struct Budget {
@@ -32,6 +32,18 @@ enum CubicStroke {
     /// reference rendering path. Counters are shared across every cubic in a draw.
     static func flatten(from start: Point, controls: (StrokePoint, StrokePoint, StrokePoint),
                         visible: Rect, budget: inout Budget) throws(StrokeError) -> [Point] {
+        try subdivide(from: start, controls: controls, visible: visible, budget: &budget)
+    }
+
+    /// Styled geometry must retain every leaf, including invisible excursions,
+    /// because each rounded leaf contributes to dash phase and later joins.
+    static func flattenComplete(from start: Point, controls: (StrokePoint, StrokePoint, StrokePoint),
+                                budget: inout Budget) throws(StrokeError) -> [Point] {
+        try subdivide(from: start, controls: controls, visible: nil, budget: &budget)
+    }
+
+    private static func subdivide(from start: Point, controls: (StrokePoint, StrokePoint, StrokePoint),
+                                  visible: Rect?, budget: inout Budget) throws(StrokeError) -> [Point] {
         let first = FixedPoint(x: Int64(start.x) * 16, y: Int64(start.y) * 16)
         // All caller starts must originate from a rounded signed 28.4 point. This
         // bound also proves every dot-product determinant below fits Int128.
@@ -43,7 +55,7 @@ enum CubicStroke {
         var endpoints: [Point] = []
         while let piece = pending.popLast() {
             try budget.visit()
-            if piece.isOutside(visible) || piece.isFlat {
+            if visible.map({ piece.isOutside($0) }) == true || piece.isFlat {
                 try budget.appendEdge()
                 endpoints.append(piece.end.rounded)
                 continue

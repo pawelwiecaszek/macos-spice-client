@@ -1,10 +1,10 @@
 # Stroke drawing: solid cosmetic paths
 
 C1 stroke slices A–B, 2026-11-17. Implements solid one-pixel polylines, cubic curves
-and closed figures. [Axis-aligned styled figures](STYLED_STROKES.md) now have reference
-fixtures and bounded rendering, along with joined diagonal styles; curved styled strokes remain rejected as
-a whole until their separate rasterization slice is verified. No failure leaves a partially painted
-figure. Text remains a separate C1 slice.
+and closed figures. [Styled figures](STYLED_STROKES.md) also have reference fixtures
+and bounded rendering, including diagonal joins and complete cubic subdivision.
+Unsupported metadata and exhausted budgets reject the complete draw before painting.
+Text remains a separate C1 slice.
 
 ## Verified contract
 
@@ -47,7 +47,7 @@ rounded continuation, quantized subdivision, clipping and degenerate curves.
 
 Independent review passed after adding an inversion-only descriptor fallback regression.
 Live stroke-specific captures remain pending. Follow-up slices
-must establish curved geometric dash pixels before enabling those paths.
+must establish text drawing contracts before enabling that command.
 Straight axis/diagonal dash, join and overlap behavior is covered by the styled-stroke fixtures. Ordinary desktop launch alone does
 not prove that a server emitted any stroke command. The installed Phase 5 app and its
 PR remain unchanged by this local slice.

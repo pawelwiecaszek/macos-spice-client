@@ -81,11 +81,11 @@ struct StyledStrokePlan {
 
     init(path: StrokePath, rects: [Rect], dash: StrokeDashPattern, idempotent: Bool) throws(StrokeError) {
         do { try path.validate() } catch { throw .invalidPath }
-        guard !path.segments.contains(where: { $0.flags.contains(.bezier) }) else { throw .unsupported }
         region = rects.reduce(Rect(x: 0, y: 0, width: 0, height: 0)) { $0.union($1) }
         let visible = region
         var result: [StyledStrokeCoverage] = [], work = 0, figure = 0, edgeCount = 0
         var segments: [StrokeSegment] = []
+        var curveBudget = CubicStroke.Budget()
         func add(_ item: StyledStrokeCoverage, visits: Int) throws(StrokeError) {
             let amount = visits.multipliedReportingOverflow(by: rects.count)
             guard !amount.overflow, amount.partialValue <= 8 * 1024 * 1024 - work,
@@ -97,23 +97,37 @@ struct StyledStrokePlan {
             guard !segments.isEmpty else { return }
             figure += 1
             var first: Point?, current: Point?, edges: [(Point, Point)] = []
+            func connect(to endpoint: Point) throws(StrokeError) {
+                if let current, current != endpoint {
+                    guard edges.count < 65_536 - edgeCount else { throw .workLimit }
+                    edges.append((current, endpoint))
+                }
+                current = endpoint
+            }
             for segment in segments {
                 var index = 0
                 if segment.flags.contains(.begin) {
                     current = segment.points[0].rounded; first = current; index = 1
                 }
-                for point in segment.points.dropFirst(index) {
-                    let endpoint = point.rounded
-                    if let current, current != endpoint { edges.append((current, endpoint)) }
-                    current = endpoint
+                if segment.flags.contains(.bezier) {
+                    while index < segment.points.count {
+                        guard let start = current else { throw .invalidPath }
+                        let controls = (segment.points[index], segment.points[index + 1], segment.points[index + 2])
+                        let endpoints = try CubicStroke.flattenComplete(from: start, controls: controls, budget: &curveBudget)
+                        for endpoint in endpoints { try connect(to: endpoint) }
+                        index += 3
+                    }
+                } else {
+                    for point in segment.points.dropFirst(index) { try connect(to: point.rounded) }
                 }
                 if segment.flags.contains(.close), let current, let first, current != first {
-                    edges.append((current, first))
+                    try connect(to: first)
                 }
             }
             guard edges.count <= 65_536 - edgeCount else { throw .workLimit }
             edgeCount += edges.count
-            if edges.contains(where: { $0.0.x != $0.1.x && $0.0.y != $0.1.y }) {
+            if segments.contains(where: { $0.flags.contains(.bezier) }) ||
+                edges.contains(where: { $0.0.x != $0.1.x && $0.0.y != $0.1.y }) {
                 var phase: Int64 = 0
                 var spans: [StyledDiagonalSpan] = []
                 for edge in edges {

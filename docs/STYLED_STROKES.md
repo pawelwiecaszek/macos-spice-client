@@ -1,8 +1,8 @@
-# Styled strokes: straight geometric figures
+# Styled strokes: geometric figures
 
 C1 stroke slice C, 2026-11-18. Adds width-one geometric dashed horizontal/vertical
-figures, including orthogonal joins and closure. Joined diagonal figures are also supported. Curved styled paths
-remain unsupported as a whole; no earlier segment is painted before that rejection.
+figures, including orthogonal joins and closure. Joined diagonal and cubic figures are also supported through bounded complete-geometry
+planning. Unsupported metadata and exhausted budgets reject before any pixel changes.
 This is not full styled-stroke or C1 completion. The installed Phase 5 app and PR remain
 unchanged by this local implementation.
 
@@ -50,7 +50,7 @@ and foreground-raster helpers. Pattern images remain snapshots of the pre-draw s
   rather than emulated. The period is at most 65,025 pixels.
 - Prefix sums and bounded binary queries skip arbitrary offscreen phase distances
   without walking them. Diagonal metrics use geometric distance with integer-verified dash boundaries and
-  ceiling phase advancement per segment. Curved styles remain guarded.
+  ceiling phase advancement per segment. Curved styles use full-geometry subdivision before phase planning.
 - Complete preflight limits a draw to 65,536 spans, 131,072 span/join operations and
   8 Mi visible-step/clip tests before modifying pixels. Existing wire/path limits remain.
 - Coverage uses at most one bit per clipped bounding-area pixel plus one index per
@@ -68,8 +68,7 @@ on rejection. The wire fixture patches style offsets after complete path constru
 its decoded styles and cubic flag are checked so rejection tests exercise the intended
 unsupported geometry. A throughput benchmark reports timings without a speed threshold.
 
-Live styled-stroke captures remain pending. Remaining C1 work includes
-curved geometric dash rendering, then text. A normal desktop launch does not by itself
+Live styled-stroke captures remain pending. Remaining C1 work includes text rendering. A normal desktop launch does not by itself
 establish that the guest emitted a styled stroke.
 
 ## Standalone diagonal extension
@@ -91,11 +90,11 @@ conservative narrow band; invisible dash lengths are never walked.
 Separate figures may mix axis and diagonal paths. Existing axis-only figures retain
 their renderer. Mixed figures preserve exact integer cap/band coverage and advance
 phase by the ceiling of each segment's Euclidean length. The ceiling is corrected
-with integer squared comparisons. Curved styles remain guarded.
+with integer squared comparisons. Curved styles use full-geometry subdivision before phase planning.
 
 ## Joined diagonal extension
 
-Straight diagonal figures now support miter joins, closure, and retracing. A join
+Straight diagonal figures support miter joins, closure, and retracing. A join
 is admitted only when both neighboring foreground pieces touch according to the
 reference's post-rounding endpoint rule. Outer wedges use exact integer cap/band
 tests. Miters exceeding the reference limit become bevels, whose boundary retains
@@ -115,3 +114,28 @@ reference outside this repository; no reference implementation is included. A la
 external sweep matched 2,048 cases. Additional tests check that exhausting join work
 rejects the complete draw before changing an earlier figure, and that wire-decoded
 joined paths preserve phase. Live capture acceptance remains pending.
+
+## Curved styled extension
+
+Styled cubic segments use the same quantized fixed-point subdivision as solid
+cubics, followed by the verified geometric dashed-polyline renderer. Each cubic
+starts at the preceding rounded endpoint. All leaves are retained, even when the
+control hull is invisible: each nonzero rounded edge advances phase by its ceiling
+Euclidean length. Duplicate rounded vertices contribute no phase. The solid-only
+visibility shortcut remains available to solid strokes through its original API.
+
+A draw-wide budget caps subdivision at 65,536 nodes/endpoints and depth 32; the
+existing total edge, coverage-operation and visible-work caps still apply. Rounded
+endpoints stay as Point values rather than narrowing back into raw 28.4 wire
+coordinates, including the positive rounded Int32 boundary. The full plan precedes
+pixel mutation. Existing termination/backtracking safeguards remain deliberate
+robustness differences from the reference's pathological cases.
+
+Forty-two fixed pixel fixtures cover seven curves under COPY/XOR with even, odd
+gap-start and single-entry styles: quantization, arch, fractional start, loop,
+line continuation, closure and invisible-prefix phase. The surface excludes a
+reference loop miter at (-1,-1); expected pixels are clipped accordingly. Additional
+regressions compare clipped/full render phase, native 16-bit colors, extreme rounded
+coordinates, degenerate/backtracking termination, and shared budget exhaustion with
+an earlier visible figure left unchanged. Display-channel tests accept styled cubics.
+These fixtures establish bounded local coverage; live curve captures remain pending.

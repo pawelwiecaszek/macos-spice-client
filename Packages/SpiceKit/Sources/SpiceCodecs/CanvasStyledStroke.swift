@@ -1,8 +1,8 @@
 import SpiceWire
 
 extension PixelBuffer {
-    /// Renders straight geometric styled figures, including bounded miter joins.
-    /// Gaps stay transparent; cubic styles remain unsupported. Phase
+    /// Renders geometric styled figures, including bounded cubics and miter joins.
+    /// Gaps stay transparent. Phase
     /// includes complete offscreen segments and resets at each figure boundary.
     @discardableResult
     public mutating func strokeStyled(path: StrokePath, attributes: StrokeAttributes, brush: FillSource,

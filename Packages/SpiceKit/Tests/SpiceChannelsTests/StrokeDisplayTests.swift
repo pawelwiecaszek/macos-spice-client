@@ -13,14 +13,15 @@ struct StrokeDisplayTests {
         #expect(result.surface.pixels.dropFirst(5).allSatisfy { $0 == 0xFF00_0000 })
     }
 
-    @Test func styledCubicPathsRejectWithoutPaintingAPartialFigure() async throws {
+    @Test func styledCubicPathsRenderThroughTheDisplayChannel() async throws {
         for message in [stroke(styled: true, curve: true)] {
             let decoded = try DrawStroke(decoding: message.payload)
             #expect(decoded.attributes.style == [16, 16])
             #expect(decoded.path.segments.contains { $0.flags.contains(.bezier) })
             let result = try await replay(message)
-            #expect(result.errors == 1)
-            #expect(result.surface.pixels.allSatisfy { $0 == 0xFF00_0000 })
+            #expect(result.errors == 0)
+            #expect(result.surface.pixels.contains(0xFFFF_0000))
+            #expect(result.surface.pixels.allSatisfy { $0 == 0xFFFF_0000 || $0 == 0xFF00_0000 })
         }
     }
 

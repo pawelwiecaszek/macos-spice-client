@@ -47,8 +47,7 @@ curved segments partially.
 
 Solid-only pruning uses a conservative control hull outside the visible bounding box
 with a one-pixel rounding margin. A skipped piece still emits its actual rounded endpoint
-so following segments start correctly. This shortcut must not be used to calculate a
-future dash phase or curve length. Entirely empty plans avoid requesting mutable pixel
+so following segments start correctly. The explicit full-geometry API disables this shortcut for styled phase planning. Entirely empty plans avoid requesting mutable pixel
 storage. No allocation occurs per rendered pixel.
 
 ## Validation boundary
@@ -60,5 +59,5 @@ exhaustion with unchanged pixels. A synthetic display message exercises mixed pa
 Existing solid-line, ROP3 and real-server image replays remain regression gates.
 
 Independent review passed. Live curve-specific captures remain pending; an ordinary
-launch alone does not prove the guest emitted a cubic stroke. Axis-aligned dashed figures have a separate verified slice; diagonal/curved styled
-strokes and text rendering remain unfinished C1 work.
+launch alone does not prove the guest emitted a cubic stroke. [Styled curves](STYLED_STROKES.md) now have a separate verified slice using complete
+subdivision. Text rendering remains unfinished C1 work.

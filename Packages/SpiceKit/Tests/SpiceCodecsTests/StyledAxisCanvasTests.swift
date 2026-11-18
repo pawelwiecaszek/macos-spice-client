@@ -92,16 +92,6 @@ struct StyledAxisCanvasTests {
         #expect(target.pixels == [0xFFFF_0000,0xFFFF_0000,0xFF00_0000,0xFF00_0000,0xFF00_0000])
     }
 
-    @Test func unsupportedCurvesLeaveEarlierSegmentsUnpainted() {
-        var target = PixelBuffer(width: 5, height: 5)
-        let zero = StrokePoint(x: 0, y: 0)
-        #expect(throws: StrokeError.unsupported) {
-            try target.strokeStyled(path: .init(segments: [.init(flags: [.begin,.end,.bezier], points: [zero,zero,zero,zero])]),
-                                    attributes: attributes([2,2]), brush: .color(.max), box: target.bounds, clip: .none, mode: .opPut)
-        }
-        #expect(lit(target).isEmpty)
-    }
-
     @Test func workBudgetExhaustionIsDetectedBeforePainting() {
         let figure = path([(0,0),(1,0)]).segments[0]
         var target = PixelBuffer(width: 1, height: 1)
