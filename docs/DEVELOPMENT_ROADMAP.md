@@ -136,8 +136,8 @@ ROP3 automated verification and review are complete. Stroke slice A now implemen
 solid cosmetic polylines/closed figures, with bounded wire decoding and raster work;
 see [stroke scope and remaining coverage](STROKE_DRAWING.md). Slice B adds bounded
 [cubic curve planning](CUBIC_STROKES.md) with pinned-reference fixtures. Slice C adds [axis-aligned styled figures](STYLED_STROKES.md), followed by standalone
-diagonal segments. Joined diagonal/curved styled paths remain guarded pending their separate reference coverage. Independent stroke review passed; live
+diagonal segments and their joins. Curved styled paths remain guarded pending their separate reference coverage. Independent stroke review passed; live
 capture acceptance remains a separate gate.
 
-**Next:** diagonal joins and curved styled strokes, then text. Keep the escape rule for
+**Next:** curved styled strokes, then text. Keep the escape rule for
 unavailable captures/hardware; do not label partial stroke support as full C1 completion.

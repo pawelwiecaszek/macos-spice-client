@@ -61,17 +61,6 @@ struct StyledDiagonalCanvasTests {
         #expect(image[2,2] == 0xFF00_0000)
     }
 
-    @Test func unsupportedDiagonalJoinsRejectTheEntireDraw() {
-        var image = PixelBuffer(width: 10, height: 10)
-        let first = path([(0,9),(8,9)]).segments[0]
-        let joined = path([(0,0),(4,4),(8,4)]).segments[0]
-        #expect(throws: StrokeError.unsupported) {
-            try image.strokeStyled(path: .init(segments: [first,joined]), attributes: .init(flags: 8, style: [32,32]),
-                                   brush: .color(.max), box: image.bounds, clip: .none, mode: .opPut)
-        }
-        #expect(lit(image).isEmpty)
-    }
-
     @Test func extremeOffscreenDistanceDoesNotWalkInvisibleDashes() throws {
         var image = PixelBuffer(width: 4, height: 4)
         let figure = StrokeSegment(flags: [.begin,.end], points: [

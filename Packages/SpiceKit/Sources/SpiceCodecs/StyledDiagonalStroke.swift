@@ -1,6 +1,6 @@
 import SpiceWire
 
-/// A standalone width-one geometric segment. Integer half-plane tests keep
+/// A width-one geometric segment. Integer half-plane tests keep
 /// distant clipped geometry exact; floating point only proposes candidate pixels.
 struct StyledDiagonalSpan {
     let start: Point
@@ -8,8 +8,17 @@ struct StyledDiagonalSpan {
     let dy: Int64
     let squaredLength: Int64
     let length: Double
+    let phase: Int64
 
-    init(start: Point, end: Point) {
+    var phaseLength: Int64 {
+        var result = Int64(length)
+        while result * result < squaredLength { result += 1 }
+        while result > 0, (result - 1) * (result - 1) >= squaredLength { result -= 1 }
+        return result
+    }
+
+    init(start: Point, end: Point, phase: Int64 = 0) {
+        self.phase = phase
         self.start = start
         dx = Int64(end.x) - Int64(start.x)
         dy = Int64(end.y) - Int64(start.y)
@@ -48,28 +57,29 @@ struct StyledDiagonalSpan {
         while boundary(distance) > dotSquared { distance -= 1 }
         while boundary(distance + 1) <= dotSquared { distance += 1 }
         if !forward, boundary(distance) == dotSquared { distance -= 1 }
-        return dash.isForeground(at: distance)
+        return dash.isForeground(at: phase + distance)
     }
 }
 
 enum StyledStrokeCoverage {
     case axis(StyledAxisCoverage, figure: Int)
     case diagonal(StyledDiagonalSpan, y: Int, coordinates: Range<Int>, figure: Int)
+    case join(StyledStrokeJoin, y: Int, coordinates: Range<Int>, figure: Int)
 
     var figure: Int {
         switch self {
-        case .axis(_, let figure), .diagonal(_, _, _, let figure): figure
+        case .axis(_, let figure), .diagonal(_, _, _, let figure), .join(_, _, _, let figure): figure
         }
     }
 }
 
-/// Axis figures keep their verified joins. A figure containing a diagonal is
-/// admitted only when it has one nonzero edge, so unverified joins stay atomic.
+/// Every figure is planned in full before painting. Axis-only figures retain
+/// their renderer; mixed figures use the same segment coverage plus bounded joins.
 struct StyledStrokePlan {
     let coverage: [StyledStrokeCoverage]
     let region: Rect
 
-    init(path: StrokePath, rects: [Rect], dash: StrokeDashPattern) throws(StrokeError) {
+    init(path: StrokePath, rects: [Rect], dash: StrokeDashPattern, idempotent: Bool) throws(StrokeError) {
         do { try path.validate() } catch { throw .invalidPath }
         guard !path.segments.contains(where: { $0.flags.contains(.bezier) }) else { throw .unsupported }
         region = rects.reduce(Rect(x: 0, y: 0, width: 0, height: 0)) { $0.union($1) }
@@ -104,18 +114,48 @@ struct StyledStrokePlan {
             guard edges.count <= 65_536 - edgeCount else { throw .workLimit }
             edgeCount += edges.count
             if edges.contains(where: { $0.0.x != $0.1.x && $0.0.y != $0.1.y }) {
-                guard edges.count == 1, let edge = edges.first else { throw .unsupported }
-                let span = StyledDiagonalSpan(start: edge.0, end: edge.1)
-                let low = max(Int(visible.top), min(Int(edge.0.y), Int(edge.1.y)) - 1)
-                let high = min(Int(visible.bottom), max(Int(edge.0.y), Int(edge.1.y)) + 1)
-                if high > low {
-                    for y in low..<high {
-                        let coordinates = span.candidates(y: y, region: visible)
-                        // Count row traversal as well as candidate tests, even if
-                        // a distant band misses this row's clipped x interval.
-                        try add(.diagonal(span, y: y, coordinates: coordinates, figure: figure),
-                                visits: coordinates.count + 1)
+                var phase: Int64 = 0
+                var spans: [StyledDiagonalSpan] = []
+                for edge in edges {
+                    let span = StyledDiagonalSpan(start: edge.0, end: edge.1, phase: phase)
+                    spans.append(span)
+                    if span.dx == 0 || span.dy == 0 {
+                        let axis = try StyledAxisSpan(from: edge.0, to: edge.1, phase: phase, figure: figure)
+                        let coordinates = axis.range(in: visible)
+                        if !coordinates.isEmpty { try add(.axis(.span(axis, coordinates), figure: figure), visits: coordinates.count) }
+                    } else {
+                        let low = max(Int(visible.top), min(Int(edge.0.y), Int(edge.1.y)) - 1)
+                        let high = min(Int(visible.bottom), max(Int(edge.0.y), Int(edge.1.y)) + 1)
+                        if high > low {
+                            for y in low..<high {
+                                let coordinates = span.candidates(y: y, region: visible)
+                                try add(.diagonal(span, y: y, coordinates: coordinates, figure: figure), visits: coordinates.count + 1)
+                            }
+                        }
                     }
+                    phase += span.phaseLength
+                }
+                func join(_ incoming: StyledDiagonalSpan, _ outgoing: StyledDiagonalSpan, at vertex: Point) throws(StrokeError) {
+                    guard dash.foregroundBeforeEndpoint(at: incoming.phase + incoming.phaseLength),
+                          dash.isForeground(at: outgoing.phase),
+                          let wedge = StyledStrokeJoin(incoming: incoming, outgoing: outgoing, vertex: vertex,
+                                                       idempotent: idempotent) else { return }
+                    let low = max(Int(visible.top), Int(vertex.y) - 6)
+                    let high = min(Int(visible.bottom), Int(vertex.y) + 7)
+                    let left = max(Int(visible.left), Int(vertex.x) - 6)
+                    let right = min(Int(visible.right), Int(vertex.x) + 7)
+                    if high > low, right > left {
+                        for y in low..<high {
+                            try add(.join(wedge, y: y, coordinates: left..<right, figure: figure), visits: right - left)
+                        }
+                    }
+                }
+                for index in spans.indices.dropFirst() {
+                    try join(spans[index - 1], spans[index], at: edges[index].0)
+                }
+                if let first = edges.first, let last = edges.last, last.1 == first.0,
+                   let incoming = spans.last, let outgoing = spans.first {
+                    try join(incoming, outgoing, at: first.0)
                 }
             } else {
                 let axis = try StyledAxisPlan(path: StrokePath(segments: segments), rects: rects, dash: dash)

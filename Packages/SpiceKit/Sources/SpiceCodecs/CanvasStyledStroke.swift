@@ -1,8 +1,8 @@
 import SpiceWire
 
 extension PixelBuffer {
-    /// Renders axis-aligned figures and standalone diagonal geometric strokes.
-    /// Gaps stay transparent; diagonal joins and cubic styles remain unsupported. Phase
+    /// Renders straight geometric styled figures, including bounded miter joins.
+    /// Gaps stay transparent; cubic styles remain unsupported. Phase
     /// includes complete offscreen segments and resets at each figure boundary.
     @discardableResult
     public mutating func strokeStyled(path: StrokePath, attributes: StrokeAttributes, brush: FillSource,
@@ -15,7 +15,13 @@ extension PixelBuffer {
         let rects = paintRects(box: box, clip: clip)
         let empty = Rect(x: 0, y: 0, width: 0, height: 0)
         guard !rects.isEmpty else { return empty }
-        let plan = try StyledStrokePlan(path: path, rects: rects, dash: dash)
+        let idempotent = [UInt32(0), .max].allSatisfy { brushBit in
+            [UInt32(0), .max].allSatisfy { destination in
+                let once = Self.strokeRop(mode, brush: brushBit, destination: destination)
+                return Self.strokeRop(mode, brush: brushBit, destination: once) == once
+            }
+        }
+        let plan = try StyledStrokePlan(path: path, rects: rects, dash: dash, idempotent: idempotent)
         guard !plan.coverage.isEmpty else { return empty }
         let area = plan.region.width.multipliedReportingOverflow(by: plan.region.height)
         guard !area.overflow, area.partialValue <= pixels.count else { throw .workLimit }
@@ -73,6 +79,8 @@ extension PixelBuffer {
                     }
                 case .diagonal(let span, let y, let coordinates, _):
                     for x in coordinates where span.contains(x: x, y: y, dash: dash) { paint(x: x, y: y) }
+                case .join(let wedge, let y, let coordinates, _):
+                    for x in coordinates where wedge.contains(x: x, y: y) { paint(x: x, y: y) }
                 }
             }
         }

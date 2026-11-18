@@ -1,7 +1,7 @@
-# Styled strokes: verified straight-segment subsets
+# Styled strokes: straight geometric figures
 
 C1 stroke slice C, 2026-11-18. Adds width-one geometric dashed horizontal/vertical
-figures, including orthogonal joins and closure. Standalone diagonal figures are also supported. Figures with diagonal joins and curved styled paths
+figures, including orthogonal joins and closure. Joined diagonal figures are also supported. Curved styled paths
 remain unsupported as a whole; no earlier segment is painted before that rejection.
 This is not full styled-stroke or C1 completion. The installed Phase 5 app and PR remain
 unchanged by this local implementation.
@@ -49,8 +49,8 @@ and foreground-raster helpers. Pattern images remain snapshots of the pre-draw s
   Values that would normalize to zero or wrap the reference's byte storage are rejected
   rather than emulated. The period is at most 65,025 pixels.
 - Prefix sums and bounded binary queries skip arbitrary offscreen phase distances
-  without walking them. Diagonal/cubic metrics are deliberately not approximated with
-  major-axis pixel steps: their reference uses geometric distance and segment rounding.
+  without walking them. Diagonal metrics use geometric distance with integer-verified dash boundaries and
+  ceiling phase advancement per segment. Curved styles remain guarded.
 - Complete preflight limits a draw to 65,536 spans, 131,072 span/join operations and
   8 Mi visible-step/clip tests before modifying pixels. Existing wire/path limits remain.
 - Coverage uses at most one bit per clipped bounding-area pixel plus one index per
@@ -68,7 +68,7 @@ on rejection. The wire fixture patches style offsets after complete path constru
 its decoded styles and cubic flag are checked so rejection tests exercise the intended
 unsupported geometry. A throughput benchmark reports timings without a speed threshold.
 
-Live styled-stroke captures remain pending. Remaining C1 work includes diagonal joins and
+Live styled-stroke captures remain pending. Remaining C1 work includes
 curved geometric dash rendering, then text. A normal desktop launch does not by itself
 establish that the guest emitted a styled stroke.
 
@@ -88,9 +88,30 @@ small reference cases. Clipping, native 16-bit colors, extreme offscreen coordin
 and atomic work-limit rejection have regression tests. Rows examine only a
 conservative narrow band; invisible dash lengths are never walked.
 
-Separate figures may mix axis paths and standalone diagonals. Existing axis joins
-retain their renderer. Any figure with a diagonal and more than one nonzero edge
-is rejected before painting the entire draw; this includes closed/retraced diagonal
-figures. This prevents guessing miter geometry or phase at joins. The reference
-advances phase by the ceiling of each segment's Euclidean length, a contract the
-future joined-diagonal implementation must preserve. Curved styles remain guarded.
+Separate figures may mix axis and diagonal paths. Existing axis-only figures retain
+their renderer. Mixed figures preserve exact integer cap/band coverage and advance
+phase by the ceiling of each segment's Euclidean length. The ceiling is corrected
+with integer squared comparisons. Curved styles remain guarded.
+
+## Joined diagonal extension
+
+Straight diagonal figures now support miter joins, closure, and retracing. A join
+is admitted only when both neighboring foreground pieces touch according to the
+reference's post-rounding endpoint rule. Outer wedges use exact integer cap/band
+tests. Miters exceeding the reference limit become bevels, whose boundary retains
+the reference's normalized 16-bit slope quantization. Every wedge stays within six
+pixels of its vertex and participates in the same preflight work budget.
+
+The width-one software renderer treats destination-idempotent operations differently:
+some joins are omitted when adjacent segment rectangles already cover the vertex.
+This can affect acute corners beyond the vertex, so COPY and XOR intentionally have
+separate reference expectations. The renderer classifies the actual foreground
+Boolean operation by its two-input truth table, including inversion flags.
+
+Regression fixtures cover 256 turns in all octants under COPY/XOR, plus 54 acute
+miter/bevel, reversed, closed, retraced, odd START_WITH_GAP and phase cases, and the
+24 earlier corner fixtures. The fixed outputs were produced by the unchanged pinned
+reference outside this repository; no reference implementation is included. A larger
+external sweep matched 2,048 cases. Additional tests check that exhausting join work
+rejects the complete draw before changing an earlier figure, and that wire-decoded
+joined paths preserve phase. Live capture acceptance remains pending.

@@ -37,6 +37,12 @@ struct StrokeDisplayTests {
         #expect(Array(result.surface.pixels.prefix(5)) == [0xFFFF_0000, 0xFF00_0000, 0xFFFF_0000, 0xFF00_0000, 0xFF00_0000])
     }
 
+    @Test func joinedDiagonalWireStrokePreservesRoundedPhase() async throws {
+        let result = try await replay(stroke(styled: true, joined: true))
+        #expect(result.errors == 0)
+        #expect(result.surface.pixels.indices.filter { result.surface.pixels[$0] == 0xFFFF_0000 } == [0,8])
+    }
+
     private func replay(_ message: SpiceMessage) async throws -> (surface: PixelBuffer, errors: Int) {
         let (client, server) = await MemoryByteStream.pair()
         let connection = ChannelConnection(type: .display, id: 0, stream: client, serverCaps: CapabilitySet())
@@ -61,7 +67,7 @@ struct StrokeDisplayTests {
         return (result, errors)
     }
 
-    private func stroke(styled: Bool = false, curve: Bool = false) -> SpiceMessage {
+    private func stroke(styled: Bool = false, curve: Bool = false, joined: Bool = false) -> SpiceMessage {
         var writer = ByteWriter()
         writer.writeU32(0); writer.writeI32(0); writer.writeI32(0); writer.writeI32(3); writer.writeI32(5)
         writer.writeU8(0); writer.writeU32(styled ? 40 : 35)
@@ -70,8 +76,14 @@ struct StrokeDisplayTests {
         writer.writeU8(1); writer.writeU32(0x00FF_0000)
         writer.writeU16(Ropd.opPut.rawValue); writer.writeU16(0)
         writer.writeU32(curve ? 2 : 1)
-        writer.writeU8(curve ? 1 : 3); writer.writeU32(2)
-        writer.writeI32(0); writer.writeI32(0); writer.writeI32(64); writer.writeI32(0)
+        writer.writeU8(curve ? 1 : 3); writer.writeU32(joined ? 3 : 2)
+        if joined {
+            for point: (Int32, Int32) in [(0,0),(32,32),(64,0)] {
+                writer.writeI32(point.0); writer.writeI32(point.1)
+            }
+        } else {
+            writer.writeI32(0); writer.writeI32(0); writer.writeI32(64); writer.writeI32(0)
+        }
         if curve {
             writer.writeU8(18); writer.writeU32(3)
             for point: (Int32, Int32) in [(64, 16), (32, 32), (0, 16)] {
