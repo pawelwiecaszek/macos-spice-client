@@ -135,9 +135,9 @@ update is included in this local C1 slice.
 ROP3 automated verification and review are complete. Stroke slice A now implements
 solid cosmetic polylines/closed figures, with bounded wire decoding and raster work;
 see [stroke scope and remaining coverage](STROKE_DRAWING.md). Slice B adds bounded
-[cubic curve planning](CUBIC_STROKES.md) with pinned-reference fixtures. Styled paths
-remain guarded pending their separate reference coverage. Independent stroke review passed; live
+[cubic curve planning](CUBIC_STROKES.md) with pinned-reference fixtures. Slice C adds [axis-aligned styled figures](STYLED_STROKES.md); diagonal/curved styled
+paths remain guarded pending their separate reference coverage. Independent stroke review passed; live
 capture acceptance remains a separate gate.
 
-**Next:** styled/dashed strokes, then text. Keep the escape rule for
+**Next:** diagonal/curved styled strokes, then text. Keep the escape rule for
 unavailable captures/hardware; do not label partial stroke support as full C1 completion.

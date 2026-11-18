@@ -60,5 +60,5 @@ exhaustion with unchanged pixels. A synthetic display message exercises mixed pa
 Existing solid-line, ROP3 and real-server image replays remain regression gates.
 
 Independent review passed. Live curve-specific captures remain pending; an ordinary
-launch alone does not prove the guest emitted a cubic stroke. Dashed/styled strokes and
-text rendering remain unfinished C1 slices.
+launch alone does not prove the guest emitted a cubic stroke. Axis-aligned dashed figures have a separate verified slice; diagonal/curved styled
+strokes and text rendering remain unfinished C1 work.

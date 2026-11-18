@@ -81,4 +81,20 @@ struct BenchmarkTests {
         print("Benchmark cubic strokes x100: \(elapsed)")
     }
 
+    @Test func styledAxisStrokeThroughput() throws {
+        var surface = PixelBuffer(width: 1920, height: 1080)
+        let path = StrokePath(segments: [.init(flags: [.begin,.end], points: [
+            .init(x: 0, y: 0), .init(x: 1919 * 16, y: 0), .init(x: 1919 * 16, y: 1079 * 16)
+        ])])
+        let attributes = StrokeAttributes(flags: 8, style: [32,32])
+        let clock = ContinuousClock()
+        let elapsed = try clock.measure {
+            for _ in 0..<100 {
+                try surface.strokeStyled(path: path, attributes: attributes, brush: .color(.max),
+                                         box: surface.bounds, clip: .none, mode: .opXor)
+            }
+        }
+        print("Benchmark styled axis strokes 1080p x100: \(elapsed)")
+    }
+
 }

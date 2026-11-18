@@ -101,7 +101,7 @@ extension PixelBuffer {
         }
     }
 
-    private static func strokeRop(_ mode: Ropd, brush: UInt32, destination: UInt32) -> UInt32 {
+    static func strokeRop(_ mode: Ropd, brush: UInt32, destination: UInt32) -> UInt32 {
         if mode.rawValue & 0x3F8 == 0 { return brush } // Reference default COPY ignores inversion-only flags.
         if mode.contains(.opBlackness) { return 0 }
         if mode.contains(.opWhiteness) { return .max }

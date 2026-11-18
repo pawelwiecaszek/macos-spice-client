@@ -295,7 +295,6 @@ public actor DisplayChannel {
             }
         case .drawStroke:
             let draw = try DrawStroke(decoding: payload)
-            guard !draw.attributes.isStyled else { throw ImageResolveError.unsupported("styled stroke") }
             let brush: FillSource
             switch draw.brush {
             case .none: brush = .color(0)
@@ -309,8 +308,12 @@ public actor DisplayChannel {
             }
             do {
                 try mutate(draw.base) {
-                    try $0.strokeSolid(path: draw.path, brush: brush, box: draw.base.box,
-                                       clip: draw.base.clip, mode: draw.foreMode, format: format)
+                    if draw.attributes.isStyled {
+                        return try $0.strokeStyled(path: draw.path, attributes: draw.attributes, brush: brush,
+                                                   box: draw.base.box, clip: draw.base.clip, mode: draw.foreMode, format: format)
+                    }
+                    return try $0.strokeSolid(path: draw.path, brush: brush, box: draw.base.box,
+                                             clip: draw.base.clip, mode: draw.foreMode, format: format)
                 }
             } catch StrokeError.workLimit { throw WireError.limitExceeded("stroke work budget") }
             catch StrokeError.invalidPath { throw WireError.invalidValue("stroke path") }

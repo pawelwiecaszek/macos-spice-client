@@ -13,8 +13,11 @@ struct StrokeDisplayTests {
         #expect(result.surface.pixels.dropFirst(5).allSatisfy { $0 == 0xFF00_0000 })
     }
 
-    @Test func styledPathsRejectWithoutPaintingAPartialFigure() async throws {
-        for message in [stroke(styled: true)] {
+    @Test func styledCubicPathsRejectWithoutPaintingAPartialFigure() async throws {
+        for message in [stroke(styled: true, curve: true)] {
+            let decoded = try DrawStroke(decoding: message.payload)
+            #expect(decoded.attributes.style == [16, 16])
+            #expect(decoded.path.segments.contains { $0.flags.contains(.bezier) })
             let result = try await replay(message)
             #expect(result.errors == 1)
             #expect(result.surface.pixels.allSatisfy { $0 == 0xFF00_0000 })
@@ -26,6 +29,12 @@ struct StrokeDisplayTests {
         #expect(result.errors == 0)
         #expect(result.surface.pixels.filter { $0 != 0xFF00_0000 }.count > 4)
         #expect(Array(result.surface.pixels.prefix(4)) == Array(repeating: 0xFFFF_0000, count: 4))
+    }
+
+    @Test func styledHorizontalWireStrokeUsesTransparentGaps() async throws {
+        let result = try await replay(stroke(styled: true))
+        #expect(result.errors == 0)
+        #expect(Array(result.surface.pixels.prefix(5)) == [0xFFFF_0000, 0xFF00_0000, 0xFFFF_0000, 0xFF00_0000, 0xFF00_0000])
     }
 
     private func replay(_ message: SpiceMessage) async throws -> (surface: PixelBuffer, errors: Int) {
@@ -57,7 +66,7 @@ struct StrokeDisplayTests {
         writer.writeU32(0); writer.writeI32(0); writer.writeI32(0); writer.writeI32(3); writer.writeI32(5)
         writer.writeU8(0); writer.writeU32(styled ? 40 : 35)
         writer.writeU8(styled ? 8 : 0)
-        if styled { writer.writeU8(2); writer.writeU32(65) }
+        if styled { writer.writeU8(2); writer.writeU32(0) }
         writer.writeU8(1); writer.writeU32(0x00FF_0000)
         writer.writeU16(Ropd.opPut.rawValue); writer.writeU16(0)
         writer.writeU32(curve ? 2 : 1)
@@ -69,7 +78,13 @@ struct StrokeDisplayTests {
                 writer.writeI32(point.0); writer.writeI32(point.1)
             }
         }
-        if styled { writer.writeI32(16); writer.writeI32(16) }
-        return SpiceMessage(type: DisplayServerMessage.drawStroke.rawValue, payload: writer.bytes)
+        var bytes = writer.bytes
+        if styled {
+            var pointer = ByteWriter(); pointer.writeU32(UInt32(bytes.count))
+            bytes.replaceSubrange(27..<31, with: pointer.bytes)
+            var styles = ByteWriter(); styles.writeI32(16); styles.writeI32(16)
+            bytes += styles.bytes
+        }
+        return SpiceMessage(type: DisplayServerMessage.drawStroke.rawValue, payload: bytes)
     }
 }
