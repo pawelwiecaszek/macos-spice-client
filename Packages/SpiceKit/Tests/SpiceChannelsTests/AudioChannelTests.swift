@@ -68,4 +68,27 @@ struct AudioChannelTests {
         loop.cancel()
         await channel.close()
     }
+
+    @Test func playbackMinimumBufferRequestsRetainOrderAndUnsignedBounds() async throws {
+        #expect(PlaybackChannel.capabilities(opus: false).contains(PlaybackCapability.latency.rawValue))
+        let (connection, server) = await pair(.playback)
+        let (events, sink) = AsyncStream<PlaybackEvent>.makeStream()
+        let channel = PlaybackChannel(connection: connection, events: sink)
+        let loop = Task { try await channel.run() }
+        var iterator = events.makeAsyncIterator()
+        var latency = ByteWriter(); latency.writeU32(400)
+        try await server.send(PlaybackServerMessage.latency.rawValue, latency.bytes)
+        #expect(await iterator.next() == .latency(milliseconds: 400))
+        var start = ByteWriter()
+        start.writeU32(2); start.writeU16(1); start.writeU32(48_000); start.writeU32(1234)
+        try await server.send(PlaybackServerMessage.start.rawValue, start.bytes)
+        #expect(await iterator.next() == .start(channels: 2, frequency: 48_000))
+        latency = ByteWriter(); latency.writeU32(.max)
+        try await server.send(PlaybackServerMessage.latency.rawValue, latency.bytes)
+        #expect(await iterator.next() == .latency(milliseconds: .max))
+        try await server.send(PlaybackServerMessage.stop.rawValue, [])
+        #expect(await iterator.next() == .stop)
+        loop.cancel()
+        await channel.close()
+    }
 }

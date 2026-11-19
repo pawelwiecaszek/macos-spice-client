@@ -2,12 +2,15 @@
 import AVFoundation
 import Synchronization
 
+public enum AudioPlayerError: Error, Sendable {
+    case invalidFormat
+}
+
 /// Plays the guest's audio: interleaved S16 PCM goes into a jitter buffer that an
 /// `AVAudioSourceNode` drains on the audio thread.
 ///
-/// Playback starts once ~60 ms are buffered, pauses (silence) on underrun until it has
-/// re-buffered, and drops the oldest audio when more than ~250 ms pile up, keeping latency
-/// low over WAN links.
+/// Playback starts once the bounded minimum is buffered (60 ms by default), pauses
+/// on underrun, and drops old audio at its high-water mark (250 ms by default).
 public final class AudioPlayer: @unchecked Sendable {
     // Engine objects are only touched from the owning (main) actor; the ring buffer is
     // shared with the render thread under `ring`.
@@ -31,22 +34,44 @@ public final class AudioPlayer: @unchecked Sendable {
         var startThreshold = 0
         var maxBuffered = 0
         var underruns = 0
+
+        mutating func apply(_ policy: AudioBufferingPolicy) {
+            let previousThreshold = startThreshold
+            startThreshold = policy.startThresholdSamples
+            maxBuffered = policy.maximumBufferedSamples
+            if startThreshold > previousThreshold, count < startThreshold { playing = false }
+            dropExcess(channels: policy.channels)
+        }
+
+        mutating func dropExcess(channels: Int) {
+            guard !samples.isEmpty, count > maxBuffered else { return }
+            let drop = count - startThreshold
+            let aligned = drop - drop % channels
+            read = (read + aligned) % samples.count
+            count -= aligned
+        }
     }
 
     public init() {}
 
     /// (Re)configures for a new stream and starts the engine.
-    public func start(channels: Int, sampleRate: Int) throws {
+    public func start(channels: Int, sampleRate: Int, minimumLatencyMilliseconds: UInt32 = 0) throws {
+        guard let policy = AudioBufferingPolicy(channels: channels, sampleRate: sampleRate,
+                                                minimumLatencyMilliseconds: minimumLatencyMilliseconds) else {
+            throw AudioPlayerError.invalidFormat
+        }
         stop()
-        self.channels = max(1, min(channels, 8))
+        self.channels = channels
         self.sampleRate = sampleRate
-        let capacity = sampleRate * self.channels  // 1 s
         ring.withLock { ring in
-            ring = Ring(samples: [Float](repeating: 0, count: capacity), startThreshold: sampleRate * self.channels * 60 / 1000,
-                        maxBuffered: sampleRate * self.channels * 250 / 1000)
+            ring = Ring(samples: [Float](repeating: 0, count: policy.capacitySamples),
+                        startThreshold: policy.startThresholdSamples, maxBuffered: policy.maximumBufferedSamples)
         }
         guard let format = AVAudioFormat(standardFormatWithSampleRate: Double(sampleRate),
-                                         channels: AVAudioChannelCount(self.channels)) else { return }
+                                         channels: AVAudioChannelCount(channels)) else {
+            stop()
+            throw AudioPlayerError.invalidFormat
+        }
         let channelCount = self.channels
         let node = AVAudioSourceNode(format: format) { [ring] _, _, frameCount, bufferList in
             let buffers = UnsafeMutableAudioBufferListPointer(bufferList)
@@ -80,7 +105,8 @@ public final class AudioPlayer: @unchecked Sendable {
         engine.connect(node, to: engine.mainMixerNode, format: format)
         source = node
         engine.prepare()
-        try engine.start()
+        do { try engine.start() }
+        catch { stop(); throw error }
     }
 
     /// Queues interleaved S16 samples.
@@ -93,13 +119,18 @@ public final class AudioPlayer: @unchecked Sendable {
                 state.samples[write] = Float(sample) / 32768
                 if state.count < size { state.count += 1 } else { state.read = (state.read + 1) % size }
             }
-            // Too much latency piled up (e.g. after a network stall): drop the oldest.
-            if state.count > state.maxBuffered {
-                let drop = state.count - state.startThreshold
-                let aligned = drop - drop % max(channels, 1)
-                state.read = (state.read + aligned) % size
-                state.count -= aligned
-            }
+            state.dropExcess(channels: channels)
+        }
+    }
+
+    /// Retunes an active queue. This is a buffering target, not output-delay feedback.
+    /// A stopped player has no pending policy; pass the latest request to `start`.
+    public func setMinimumLatency(milliseconds: UInt32) {
+        guard let policy = AudioBufferingPolicy(channels: channels, sampleRate: sampleRate,
+                                                minimumLatencyMilliseconds: milliseconds) else { return }
+        ring.withLock { state in
+            guard !state.samples.isEmpty else { return }
+            state.apply(policy)
         }
     }
 

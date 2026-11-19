@@ -21,6 +21,7 @@ final class AudioController {
     @ObservationIgnored private let microphone = MicrophoneCapture()
     @ObservationIgnored private var decoder: OpusDecoder?
     @ObservationIgnored private var playbackChannels = 2
+    @ObservationIgnored private var minimumPlaybackLatency: UInt32 = 0
     @ObservationIgnored private var recordFormat: (channels: Int, frequency: Int)?
     @ObservationIgnored private var guestVolume: Float = 1
     @ObservationIgnored private var guestMuted = false
@@ -71,6 +72,9 @@ final class AudioController {
         for task in tasks { task.cancel() }
         tasks.removeAll()
         player.stop()
+        minimumPlaybackLatency = 0
+        decoder = nil
+        hasPlayback = false
         microphone.stop()
     }
 
@@ -82,14 +86,19 @@ final class AudioController {
             playbackChannels = channels
             decoder = opusDecode && frequency == Int(OpusCodec.sampleRate) ? OpusDecoder(channels: channels) : nil
             do {
-                try player.start(channels: channels, sampleRate: frequency)
+                try player.start(channels: channels, sampleRate: frequency,
+                                 minimumLatencyMilliseconds: minimumPlaybackLatency)
                 applyVolume()
                 hasPlayback = true
             } catch {
+                decoder = nil
+                hasPlayback = false
                 log.error("audio output failed: \(error.localizedDescription, privacy: .public)")
             }
         case .stop:
             player.stop()
+            minimumPlaybackLatency = 0
+            decoder = nil
             hasPlayback = false
         case .data(let mode, _, let bytes):
             switch mode {
@@ -107,8 +116,9 @@ final class AudioController {
         case .mute(let muted):
             guestMuted = muted
             applyVolume()
-        case .latency:
-            break
+        case .latency(let milliseconds):
+            minimumPlaybackLatency = milliseconds
+            player.setMinimumLatency(milliseconds: milliseconds)
         }
     }
 

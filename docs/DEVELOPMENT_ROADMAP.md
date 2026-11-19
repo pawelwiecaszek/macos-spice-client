@@ -25,7 +25,7 @@ technical prerequisite for every later row. Implement one bounded slice at a tim
 | 0 | Freeze baseline and prepare the next slice | Reuse existing fixtures, acceptance logs and the audit; record unknown backend/guest versions when available. Pin only the protocol/API contract needed next. | Record baseline commit, one target failure/scenario and a failing regression fixture. Inventory offered/implemented capabilities without exposing secrets. Missing server facts block live claims, not offline tests. |
 | 1 | **C2: channel/cache ownership and synchronization** | `SpiceChannels/ChannelConnection.swift:90` ignores waits; `SpiceChannels/DisplayChannel.swift:142,175` uses separate resolvers with the same advertised cache/dictionary IDs. Resolve ownership and teardown in the existing paths, not a generic lifecycle framework. | Pin serial/mini-header and cache-ID semantics. Decide explicit sharing or permitted ID isolation. Test cache population → cross-channel reference → synchronized invalidation, GLZ ownership, processed-message barriers, missing/closed channels, cancellation and stale completion after replacement. Keep memory/waits bounded. |
 | 2 | **Phase 5: fresh-ticket reconnect**, manual first, then automatic recovery | Reuse `App/Ravada/RavadaDesktopStore.swift:128`, existing typed routes and `App/Session/SessionWindowManager.swift:153`. Deliver independent Ravada value without waiting for all drawing or A/V work. Stabilize authorization/session replacement before machine controls. | Bind original portal origin, login-store epoch and machine identity; reauthorize and fetch a fresh ticket without Start/clone. Replace the same window; preserve preferences and reject stale results. Then test bounded network/sleep/wake recovery, logout, revoked access, deleted/stopped machine and profile edits. Proxmox/manual behavior unchanged. |
-| 3 | **C1: missing drawing operations**, split into ROP3 → stroke → text | `SpiceChannels/DisplayChannel.swift:334` drops these operations. Reuse surface/image/brush helpers; do not rebuild the renderer. Keep unadvertised composite separate until its contract/need is verified. | Automated gate per operation: synthetic wire cases, golden pixels, clipping/pixel-format/bounds failures; existing replay stays correct. Live gate: representative sanitized real replay when available, recorded separately. |
+| 3 | **C1: missing drawing operations**, split into ROP3 → stroke → text | Local ROP3/stroke/text handlers and automated gates now pass. Reuse surface/image/brush helpers; preserve the documented compatibility boundaries. Keep unadvertised composite separate until its contract/need is verified. | Automated gate per operation: synthetic wire cases, golden pixels, clipping/pixel-format/bounds failures; existing replay stays correct. Live gate: representative sanitized real replay when available, recorded separately. |
 | 4 | **C3: capability truth and A/V timing**, split into audio → video | `App/Session/AudioController.swift:94` discards timestamps/latency. Extend existing `SpiceChannels/MultimediaClock.swift`; settle timestamp/frame lifecycle before GPU delivery changes. | Automated gate: affected capabilities map to handlers/tests; consume minimum buffering and actual delay; test wrap/reset/rate/route changes, stop/reconnect cleanup, bounded queues and scheduled/dropped video. Live gate: compare same-guest A/V drift before/after. |
 | 5 | **Phase 6: permission-aware actions** | Reuse Phase 4 job handling and Phase 5 authenticated identity/readiness. Extract only a small shared operation helper where the second consumer demonstrates duplication. | Implement one fixed action at a time. Allowed/denied account tests, explicit confirmation for disruptive actions, matching job result, duplicate-click suppression and no automatic mutation retry. Closing a VDI still never shuts it down. |
 | 6 | **Phase 8A / C4: true multi-head presentation** | `App/Session/SessionController.swift:412` discards layout events. Settle head/surface geometry and input coordinates before optimizing video-to-Metal layout. | Single-surface two-head and separate-channel guests; correct head crops and pointer mapping, resize/Retina/scaled behavior, unplug/fullscreen and monitor-count/size bounds. |
@@ -122,10 +122,9 @@ same-window manual reconnect. The user subsequently reported that all their test
 worked well; physical network/sleep scenarios were not independently observed by the
 agent. Automated tests cover those failure paths without changing the host network.
 
-Phase 5 installation and draft PR publication are complete. The next unfinished slice
-follows the ordered table: C1 ROP3, then stroke/text, then C3 media correctness before
-Phase 6 permission-aware actions. This corrects the previous summary's premature jump
-to Phase 6.
+Phase 5 installation and draft PR publication are complete. The scoped C1 automated
+baseline now passes; live command-specific captures remain pending. Work proceeds to
+C3 audio/media correctness before Phase 6 permission-aware actions.
 
 ROP3 is implemented locally with synthetic wire/pixel/display regressions and existing
 replay coverage; see [the contract and evidence](ROP3_DRAWING.md). Live ROP3-specific
@@ -143,5 +142,7 @@ A1/A4/A8 text in both row orders and 16/32-bit solid/pattern brushes now have
 bounded decoding and rendering; see
 [text scope](TEXT_DRAWING.md).
 
-**Next:** C1 acceptance review, recording live capture gaps separately, then C3 media correctness. Keep the escape rule for
-unavailable captures/hardware; do not label partial stroke support as full C1 completion.
+[C1 acceptance review](C1_DRAWING_ACCEPTANCE.md) passes the scoped automated baseline,
+with live captures recorded as pending. C3 now begins with bounded server-directed
+playback buffering; timestamp-to-playhead mapping, presentation delay, route changes
+and video scheduling remain separate slices. See [audio buffering](AUDIO_TIMING.md).

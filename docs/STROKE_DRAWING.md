@@ -4,7 +4,7 @@ C1 stroke slices A–B, 2026-11-17. Implements solid one-pixel polylines, cubic 
 and closed figures. [Styled figures](STYLED_STROKES.md) also have reference fixtures
 and bounded rendering, including diagonal joins and complete cubic subdivision.
 Unsupported metadata and exhausted budgets reject the complete draw before painting.
-[Text](TEXT_DRAWING.md) remains a separate C1 slice with partial A1 support.
+[Raster text](TEXT_DRAWING.md) has its own accepted automated baseline.
 
 ## Verified contract
 
@@ -47,7 +47,7 @@ rounded continuation, quantized subdivision, clipping and degenerate curves.
 
 Independent review passed after adding an inversion-only descriptor fallback regression.
 Live stroke-specific captures remain pending. Follow-up slices
-must establish text drawing contracts before enabling that command.
+are tracked separately in the [C1 acceptance record](C1_DRAWING_ACCEPTANCE.md).
 Straight axis/diagonal dash, join and overlap behavior is covered by the styled-stroke fixtures. Ordinary desktop launch alone does
 not prove that a server emitted any stroke command. The installed Phase 5 app and its
 PR remain unchanged by this local slice.
