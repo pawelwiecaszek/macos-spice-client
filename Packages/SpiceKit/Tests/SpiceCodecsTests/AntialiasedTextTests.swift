@@ -72,16 +72,17 @@ struct AntialiasedTextTests {
         #expect(image.pixels == [0xFF0000FF,0xFFFF0000])
     }
 
-    @Test func unsupportedNativeAntialiasAndInvalidPatternsAreAtomic() {
+    @Test func nativeAntialiasAndInvalidPatternsHaveDefinedResults() {
         var image = PixelBuffer(width: 1,height: 1)
-        #expect(throws: TextRasterError.unsupported) {
+        #expect(throws: Never.self) {
             try paint(&image,glyph(data: [0xF0],width: 1,height: 1),foreground: .color(0xF800),format: .r565)
         }
+        #expect(image[0,0] == 0xFFF70000)
         #expect(throws: TextRasterError.invalidGlyphs) {
             try paint(&image,glyph(data: [0xF0],width: 1,height: 1),
                       foreground: .pattern(PixelBuffer(width: 0,height: 0),origin: .init(x: 0,y: 0)))
         }
-        #expect(image[0,0] == 0xFF000000)
+        #expect(image[0,0] == 0xFFF70000)
     }
 
     private func glyph(data: [UInt8],width: Int,height: Int,x: Int32 = 0,y: Int32 = 0) -> RasterGlyph {

@@ -22,10 +22,22 @@ struct TextDisplayTests {
         #expect(result.surface[2,1] == 0xFF0000FF)
     }
 
-    @Test func unsupportedTopDownTextLeavesBackgroundUntouched() async throws {
+    @Test func a8TopDownWireTextUsesByteCoverage() async throws {
+        let result = try await replay(flags: 12)
+        #expect(result.errors == 0)
+        #expect(result.surface[1,1] == 0xFF0000FF)
+        #expect(result.surface[2,1] == 0xFF4000BF)
+        #expect(result.surface[3,1] == 0xFFFF0000)
+        #expect(result.surface[1,2] == 0xFFFF0000)
+        #expect(result.surface[2,2] == 0xFF80007F)
+        #expect(result.surface[3,2] == 0xFF0000FF)
+    }
+
+    @Test func topDownWireTextUsesTheDeclaredRowOrder() async throws {
         let result = try await replay(flags: 9)
-        #expect(result.errors == 1)
-        #expect(result.surface.pixels.allSatisfy { $0 == 0xFF000000 })
+        #expect(result.errors == 0)
+        #expect([8,13,15].allSatisfy { result.surface.pixels[$0] == 0xFFFF0000 })
+        #expect([7,9,14].allSatisfy { result.surface.pixels[$0] == 0xFF0000FF })
     }
 
     private func replay(flags: UInt8) async throws -> (surface: PixelBuffer,errors: Int) {
@@ -48,7 +60,8 @@ struct TextDisplayTests {
         writer.writeU16(1); writer.writeU8(flags)
         for value: Int32 in [2,2,-1,-1] { writer.writeI32(value) }
         writer.writeU16(3); writer.writeU16(2)
-        writer.writeBytes(flags == 2 ? [0x40,0x00,0xA0,0x00] : [0x40,0xA0])
+        if flags & 4 != 0 { writer.writeBytes([0,64,255,255,128,0]) }
+        else { writer.writeBytes(flags == 2 ? [0x40,0x00,0xA0,0x00] : [0x40,0xA0]) }
         var ping = ByteWriter(); ping.writeU32(1); ping.writeU64(0)
         try await server.send(SpiceMessage(type: DisplayServerMessage.surfaceCreate.rawValue,payload: create.bytes).encode() +
             SpiceMessage(type: DisplayServerMessage.drawText.rawValue,payload: writer.bytes).encode() +

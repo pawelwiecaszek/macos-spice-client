@@ -7,7 +7,7 @@ public enum TextRasterError: Error, Equatable, Sendable {
 }
 
 extension PixelBuffer {
-    /// Bottom-up A1/A4 glyphs. Coverage is united with maximum alpha before
+    /// A1/A4/A8 glyphs in the declared row order. Coverage is united before
     /// foreground OVER; background uses COPY. Patterns are snapshots.
     @discardableResult
     public mutating func text(_ string: RasterString, foreground: FillSource?, background: FillSource?,
@@ -17,13 +17,11 @@ extension PixelBuffer {
         catch WireError.limitExceeded { throw .workLimit }
         catch { throw .invalidGlyphs }
         let target = format ?? (hasAlpha ? .argb32 : .xRGB32)
-        guard [.a1, .a4].contains(string.format), !string.topDown, mode == .opPut,
+        guard mode == .opPut,
               [.xRGB32, .argb32, .x555, .r565].contains(target) else { throw .unsupported }
         let native16 = target == .x555 || target == .r565
-        if native16, string.format != .a1 { throw .unsupported }
         for brush in [foreground, background] {
             if case .pattern(let image, _) = brush {
-                guard !native16 else { throw .unsupported }
                 guard image.width > 0, image.height > 0 else { throw .invalidGlyphs }
             }
         }
@@ -62,16 +60,17 @@ extension PixelBuffer {
             guard !cropped.isEmpty else { continue }
             let stride = (glyph.width * string.format.bitsPerPixel + 7) / 8
             for y in Int(cropped.top)..<Int(cropped.bottom) {
-                let row = glyph.height - 1 - (y - Int(bounds.top))
+                let localRow = y - Int(bounds.top)
+                let row = string.topDown ? localRow : glyph.height - 1 - localRow
                 for x in Int(cropped.left)..<Int(cropped.right) {
                     let column = x - Int(bounds.left)
                     let value: UInt8
                     if string.format == .a1 {
                         value = glyph.data[row * stride + column / 8] & (0x80 >> (column & 7)) != 0 ? 255 : 0
-                    } else {
+                    } else if string.format == .a4 {
                         let byte = glyph.data[row * stride + column / 2]
                         value = column & 1 == 0 ? byte & 0xF0 : (byte & 0x0F) << 4
-                    }
+                    } else { value = glyph.data[row * stride + column] }
                     let index = (y - Int(maskBounds.top)) * maskBounds.width + x - Int(maskBounds.left)
                     coverage[index] = max(coverage[index], value)
                 }
@@ -87,6 +86,10 @@ extension PixelBuffer {
                 return image.hasAlpha ? value : value | 0xFF00_0000
             }
         }
+        func nativePixel(_ value: UInt32) -> UInt32 {
+            if native16 { return RasterPixelFormat.expand(RasterPixelFormat.pack(value, format: target), format: target) }
+            return target == .xRGB32 ? value | 0xFF00_0000 : value
+        }
         var dirty = empty
         for y in Int(paintBounds.top)..<Int(paintBounds.bottom) {
             for x in Int(paintBounds.left)..<Int(paintBounds.right) {
@@ -95,19 +98,19 @@ extension PixelBuffer {
                 var color: UInt32?
                 if let background, x >= Int(backBounds.left), x < Int(backBounds.right),
                    y >= Int(backBounds.top), y < Int(backBounds.bottom) {
-                    color = sample(background, x: x, y: y)
+                    color = nativePixel(sample(background, x: x, y: y))
                 }
                 if let foreground, x >= Int(maskBounds.left), x < Int(maskBounds.right),
                    y >= Int(maskBounds.top), y < Int(maskBounds.bottom) {
                     let alpha = coverage[(y - Int(maskBounds.top)) * maskBounds.width + x - Int(maskBounds.left)]
                     if alpha != 0 {
                         let source = sample(foreground, x: x - Int(total.left), y: y - Int(total.top))
-                        color = Self.blendOver(source: source, destination: color ?? pixels[y * width + x],
+                        color = Self.blendOver(source: source, destination: color ?? nativePixel(pixels[y * width + x]),
                                                globalAlpha: UInt32(alpha))
                     }
                 }
                 if let color {
-                    pixels[y * width + x] = target == .xRGB32 ? color | 0xFF00_0000 : color
+                    pixels[y * width + x] = nativePixel(color)
                     dirty = dirty.union(Rect(x: x, y: y, width: 1, height: 1))
                 }
             }

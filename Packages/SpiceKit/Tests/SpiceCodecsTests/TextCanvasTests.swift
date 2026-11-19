@@ -27,16 +27,7 @@ struct TextCanvasTests {
         #expect(image[0,0] == 0xFF000000)
     }
 
-    @Test func unsupportedFormatsAndModesRejectBeforeBackgroundChanges() {
-        for value in [RasterString(format: .a8,glyphs: []),
-                      .init(format: .a1,topDown: true,glyphs: [])] {
-            var image = PixelBuffer(width: 2,height: 2)
-            #expect(throws: TextRasterError.unsupported) {
-                try image.text(value,foreground: .color(.max),background: .color(.max),backgroundArea: image.bounds,
-                                 box: image.bounds,clip: .none,mode: .opPut)
-            }
-            #expect(image.pixels.allSatisfy { $0 == 0xFF000000 })
-        }
+    @Test func unsupportedModesRejectBeforePainting() {
         var image = PixelBuffer(width: 6,height: 5)
         #expect(throws: TextRasterError.unsupported) { try draw(&image,string([glyph()]),mode: .opXor) }
         #expect(lit(image).isEmpty)

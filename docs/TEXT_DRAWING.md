@@ -1,10 +1,10 @@
-# Text drawing: A1/A4 coverage and brush patterns
+# Text drawing: raster glyphs and brush patterns
 
-This local C1 slice adds packed DRAW_TEXT decoding and bottom-up A1/A4 rendering.
-A4 coverage and pattern brushes support xRGB/ARGB surfaces. Native x555/r565 retain
-A1 solid-brush support. A8, TOP_DOWN, antialiased native-16 text and native-16 text
-patterns remain unsupported before any background or foreground pixels change.
-Rendering accepts foreground mode PUT. No installed-app or PR update is included.
+This local C1 implementation decodes and renders A1/A4/A8 raster glyphs in both
+bottom-up and TOP_DOWN row orders. Solid and pattern brushes support xRGB/ARGB and
+native x555/r565 surfaces. Rendering accepts foreground mode PUT; other foreground
+modes remain recoverable unsupported errors before pixels change. No installed-app
+or PR update is included.
 
 ## Wire and rendering contract
 
@@ -14,7 +14,8 @@ and [software text rendering](https://gitlab.freedesktop.org/spice/spice-common/
 The packed string contains u16 count, u8 flags and inline variable-length glyphs.
 The schema's ptr_array annotation describes C memory layout, not wire offsets.
 Each glyph has two signed points, u16 dimensions, and byte-aligned packed rows.
-A1 rows are bottom-up and bits are MSB first. The glyph box starts at render position
+A1 bits are MSB first. A8 has one coverage byte per pixel, with stride equal to width.
+Rows are bottom-up unless TOP_DOWN makes row zero the top glyph row. The glyph box starts at render position
 plus glyph origin; checked arithmetic rejects overflowing geometry.
 
 Glyph coverage is united with maximum alpha before painting. A4 rows store the high
@@ -23,8 +24,8 @@ nibble first and expand each nibble by shifting left four bits: maximum coverage
 reduces to replacement on covered pixels. Background uses
 COPY within its separate rectangle, command box, clip union and surface. The software
 reference ignores back_mode; this slice preserves that behavior rather than applying
-stroke ROP semantics to text. Solid brushes use native surface words: x555/r565 are expanded for the existing A1
-path, and xRGB/ARGB solid colors become opaque. Pattern buffers retain premultiplied
+stroke ROP semantics to text. Solid brushes use native surface words: x555/r565 words are expanded according to their distinct native layouts, and
+xRGB/ARGB solid colors become opaque. Pattern buffers retain premultiplied
 alpha when present; opaque images force alpha to 255.
 
 For a 3x2 glyph at (1,1), source bytes 40 A0 produce top row 101 and bottom row 010.
@@ -60,13 +61,32 @@ subtract the pattern origin; clipping does not move the anchor. Background patte
 use destination coordinates and COPY, including source alpha on ARGB surfaces. Pattern
 buffers are snapshots so a surface used as its own brush does not feed back new pixels.
 
-## Remaining work
+## A8, TOP_DOWN and native-format policy
 
-The pinned solid-brush conversion uses questionable five-bit depth-16 handling marked
-incorrect upstream. Destination 555/565 blending matches the Pixman oracle, but solid
-source conversion needs an explicit native policy before enabling A4 there. Existing
-A1 native-format behavior is preserved. Native text patterns also remain guarded.
-The pinned A8 mask path is marked untested and appears to read beyond the first row;
-TOP_DOWN is explicitly unimplemented there. Follow protocol and safe evidence rather
-than undefined behavior. Live text-specific captures remain pending. This slice does
-not complete C1.
+The [official glyph protocol](https://www.spice-space.org/spice-protocol.html) defines
+A8 as eight-bit alpha and TOP_DOWN as line zero at the top. The current pinned schema
+supplies the actual packed field widths. Native row selection follows that definition
+for every format. The pinned software renderer's A8 one-past-row read and TOP_DOWN
+TODO are corrected rather than reproduced; safe bounded accesses are tested at the
+first/last rows, and truncated A8 data rejects before background painting.
+
+Native solid colors use the client's existing distinct 555/565 word layouts and
+bit-replication expansion. This is an explicit native-color policy rather than bug
+compatibility with the pinned reference's five-bit-all-channels conversion, which is
+marked incorrect upstream. For native destinations, background COPY is packed and
+expanded before foreground OVER; final output is packed and expanded again. Native
+background alpha is discarded. Pattern sources retain their own premultiplied alpha
+for OVER. Quantizing only at the end would produce different pixels.
+
+Two additional Pixman oracle tables lock 160 native-destination OVER cases and 240
+sequential background-COPY/foreground-OVER cases. Tests cover native solid layout,
+all glyph row orders, exact A8 coverage, maximum overlap, truncated rows, and A8
+TOP_DOWN wire delivery. Earlier A1/A4, clipping, aliasing and resource-limit tests remain
+regression gates.
+
+## Acceptance boundary
+
+ROP3, solid/styled strokes and baseline raster text now have local automated coverage.
+Non-PUT text foreground modes remain explicitly unsupported. Live text-specific
+captures and deployment acceptance remain pending; ordinary desktop launch does not
+prove which drawing commands the guest emitted. Full SPICE parity is not claimed.
