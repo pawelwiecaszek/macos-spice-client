@@ -5,6 +5,42 @@ import SpiceWire
 
 @Suite("Audio channels", .timeLimit(.minutes(1)))
 struct AudioChannelTests {
+    @Test func playbackDeliveryOverflowEscapesAsALimitFailure() async throws {
+        let (connection, server) = await pair(.playback)
+        let buffer = try #require(PlaybackEventBuffer(maxEvents: 4, maxControls: 1, maxAudioBytes: 100))
+        let channel = PlaybackChannel(connection: connection, events: buffer)
+        let loop = Task { try await channel.run() }
+        try await server.send(PlaybackServerMessage.mute.rawValue, [1])
+        try await server.send(PlaybackServerMessage.mute.rawValue, [0])
+        do {
+            try await loop.value
+            Issue.record("Playback must report the delivery limit")
+        } catch let failure as PlaybackDeliveryFailure {
+            #expect(failure == .controlLimit)
+        } catch { Issue.record("Unexpected playback failure: \(error)") }
+        #expect(buffer.failure == .controlLimit)
+        var iterator = buffer.stream().makeAsyncIterator()
+        #expect(await iterator.next() == .stop)
+        #expect(await iterator.next() == nil)
+        await channel.close()
+    }
+
+    @Test func intentionalPlaybackDeliveryCloseRemainsCancellation() async throws {
+        let (connection, server) = await pair(.playback)
+        let buffer = PlaybackEventBuffer()
+        buffer.finish()
+        let channel = PlaybackChannel(connection: connection, events: buffer)
+        let loop = Task { try await channel.run() }
+        try await server.send(PlaybackServerMessage.mute.rawValue, [1])
+        do {
+            try await loop.value
+            Issue.record("Closed delivery must end playback")
+        } catch is CancellationError { }
+        catch { Issue.record("Intentional close must not become a limit failure: \(error)") }
+        #expect(buffer.failure == nil)
+        await channel.close()
+    }
+
     private func pair(_ type: ChannelType) async -> (ChannelConnection, ServerChannel) {
         let (client, server) = await MemoryByteStream.pair()
         return (ChannelConnection(type: type, id: 0, stream: client, serverCaps: CapabilitySet(bits: [])),
@@ -13,7 +49,7 @@ struct AudioChannelTests {
 
     @Test func playbackStartModeDataVolume() async throws {
         let (connection, server) = await pair(.playback)
-        let (events, sink) = AsyncStream<PlaybackEvent>.makeStream()
+        let (events, sink) = PlaybackEventBuffer.makeStream()
         let channel = PlaybackChannel(connection: connection, events: sink)
         let loop = Task { try await channel.run() }
         var it = events.makeAsyncIterator()
@@ -72,7 +108,7 @@ struct AudioChannelTests {
     @Test func playbackMinimumBufferRequestsRetainOrderAndUnsignedBounds() async throws {
         #expect(PlaybackChannel.capabilities(opus: false).contains(PlaybackCapability.latency.rawValue))
         let (connection, server) = await pair(.playback)
-        let (events, sink) = AsyncStream<PlaybackEvent>.makeStream()
+        let (events, sink) = PlaybackEventBuffer.makeStream()
         let channel = PlaybackChannel(connection: connection, events: sink)
         let loop = Task { try await channel.run() }
         var iterator = events.makeAsyncIterator()

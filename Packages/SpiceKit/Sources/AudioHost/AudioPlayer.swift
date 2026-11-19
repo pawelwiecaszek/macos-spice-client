@@ -113,6 +113,14 @@ public final class AudioPlayer: @unchecked Sendable {
             if !playing, count >= startThreshold { playing = true }
             return playing ? min(frames, count / channels) : 0
         }
+
+        mutating func discardQueuedAudio() {
+            read = 0
+            count = 0
+            playing = false
+            timeline?.reset()
+            renderedPosition = nil
+        }
     }
 
     public init() {}
@@ -181,6 +189,10 @@ public final class AudioPlayer: @unchecked Sendable {
             state.append(pcm, channels: channels, time: time)
         }
     }
+
+    /// Delivery loss invalidates queued audio and its codec/timing continuity,
+    /// while keeping the active output format and buffer policy.
+    public func discardQueuedAudio() { ring.withLock { $0.discardQueuedAudio() } }
 
     /// Retunes an active queue. This is a buffering target, not output-delay feedback.
     /// A stopped player has no pending policy; pass the latest request to `start`.

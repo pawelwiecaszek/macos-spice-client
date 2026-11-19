@@ -105,7 +105,8 @@ public actor SpiceSession {
     public nonisolated let cursorEvents: AsyncStream<CursorEvent>
     public nonisolated let usbEvents: AsyncStream<USBSlotEvent>
     public nonisolated let smartcardEvents: AsyncStream<SmartcardEvent>
-    /// Guest audio to play (bounded: about 5 s of 10 ms packets; older ones are dropped).
+    /// Guest audio for one consumer. Bounded packet loss is explicit; START/STOP
+    /// and other control events are never silently evicted by an audio burst.
     public nonisolated let playbackEvents: AsyncStream<PlaybackEvent>
     /// Guest requests to start/stop recording from the microphone.
     public nonisolated let recordEvents: AsyncStream<RecordEvent>
@@ -120,7 +121,7 @@ public actor SpiceSession {
     private nonisolated let cursorSink: AsyncStream<CursorEvent>.Continuation
     private nonisolated let usbSink: AsyncStream<USBSlotEvent>.Continuation
     private nonisolated let smartcardSink: AsyncStream<SmartcardEvent>.Continuation
-    private nonisolated let playbackSink: AsyncStream<PlaybackEvent>.Continuation
+    private nonisolated let playbackSink: PlaybackEventBuffer
     private nonisolated let recordSink: AsyncStream<RecordEvent>.Continuation
     private var playback: PlaybackChannel?
     private var record: RecordChannel?
@@ -161,7 +162,7 @@ public actor SpiceSession {
         (inputQueue, inputSink) = AsyncStream.makeStream(bufferingPolicy: .unbounded)
         (usbEvents, usbSink) = AsyncStream.makeStream(bufferingPolicy: .unbounded)
         (smartcardEvents, smartcardSink) = AsyncStream.makeStream(bufferingPolicy: .unbounded)
-        (playbackEvents, playbackSink) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(500))
+        (playbackEvents, playbackSink) = PlaybackEventBuffer.makeStream()
         (recordEvents, recordSink) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(16))
         (clipboardEvents, clipboardSink) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(16))
         usbAllowed = profile.enableUSBRedirection != false

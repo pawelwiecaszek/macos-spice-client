@@ -51,6 +51,7 @@ final class AudioController {
         let playback = session.playbackEvents
         tasks.append(Task { [weak self] in
             for await event in playback { self?.handle(event) }
+            if !Task.isCancelled { self?.handle(PlaybackEvent.stop) }
         })
         let record = session.recordEvents
         tasks.append(Task { [weak self] in
@@ -120,6 +121,9 @@ final class AudioController {
         case .latency(let milliseconds):
             minimumPlaybackLatency = milliseconds
             player.setMinimumLatency(milliseconds: milliseconds)
+        case .discontinuity:
+            player.discardQueuedAudio()
+            if decoder != nil { decoder = OpusDecoder(channels: playbackChannels) }
         }
     }
 

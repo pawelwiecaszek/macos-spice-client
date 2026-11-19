@@ -9,6 +9,8 @@ public enum PlaybackEvent: Sendable, Equatable {
     case volume(Float)
     case mute(Bool)
     case latency(milliseconds: UInt32)
+    /// Queued audio was discarded; reset decoded audio and timing before more DATA.
+    case discontinuity
 }
 
 /// Playback channel: forwards audio packets; decoding and output live in the host layer.
@@ -23,17 +25,17 @@ public actor PlaybackChannel {
     static let maxPacket = 64 * 1024
 
     private let connection: ChannelConnection
-    private let events: AsyncStream<PlaybackEvent>.Continuation
+    private let events: PlaybackEventBuffer
     private var mode: AudioDataMode = .raw
     private let log = ChannelLogger(category: "playback")
 
-    public init(connection: ChannelConnection, events: AsyncStream<PlaybackEvent>.Continuation) {
+    public init(connection: ChannelConnection, events: PlaybackEventBuffer) {
         self.connection = connection
         self.events = events
     }
 
     public func run() async throws {
-        defer { events.yield(.stop) }
+        defer { events.finish() }
         while true {
             await connection.messageHandled()
             let message = try await connection.nextMessage()
@@ -46,10 +48,10 @@ public actor PlaybackChannel {
                 case .mode:
                     let packet = try AudioPacket(decodingMode: message.payload)
                     mode = packet.mode ?? .invalid
-                    if !packet.data.isEmpty { events.yield(.data(mode: mode, time: packet.time, bytes: packet.data)) }
+                    if !packet.data.isEmpty { try emit(.data(mode: mode, time: packet.time, bytes: packet.data)) }
                 case .data:
                     let packet = try AudioPacket(decodingData: message.payload)
-                    events.yield(.data(mode: mode, time: packet.time, bytes: packet.data))
+                    try emit(.data(mode: mode, time: packet.time, bytes: packet.data))
                 case .start:
                     let start = try AudioStart(decoding: message.payload, hasTime: true)
                     guard start.format == audioFormatS16 else {
@@ -57,19 +59,23 @@ public actor PlaybackChannel {
                         continue
                     }
                     guard let time = start.time else { throw WireError.invalidValue("playback start time") }
-                    events.yield(.start(channels: Int(start.channels), frequency: Int(start.frequency), time: time))
+                    try emit(.start(channels: Int(start.channels), frequency: Int(start.frequency), time: time))
                 case .stop:
-                    events.yield(.stop)
+                    try emit(.stop)
                 case .volume:
-                    events.yield(.volume(try AudioVolume(decoding: message.payload).normalized))
+                    try emit(.volume(try AudioVolume(decoding: message.payload).normalized))
                 case .mute:
-                    events.yield(.mute(message.payload.first.map { $0 != 0 } ?? false))
+                    try emit(.mute(message.payload.first.map { $0 != 0 } ?? false))
                 case .latency:
                     var reader = ByteReader(message.payload)
-                    events.yield(.latency(milliseconds: try reader.readU32()))
+                    try emit(.latency(milliseconds: try reader.readU32()))
                 case nil:
                     continue
                 }
+            } catch let failure as PlaybackDeliveryFailure {
+                throw failure
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 log.error("malformed playback message \(message.type): \(error)")
             }
@@ -77,7 +83,15 @@ public actor PlaybackChannel {
     }
 
     public func close() async {
+        events.finish()
         await connection.close()
+    }
+
+    private func emit(_ event: PlaybackEvent) throws {
+        guard events.yield(event) else {
+            if let failure = events.failure { throw failure }
+            throw CancellationError()
+        }
     }
 }
 

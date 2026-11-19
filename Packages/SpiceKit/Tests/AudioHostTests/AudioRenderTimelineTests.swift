@@ -96,6 +96,24 @@ struct AudioRenderTimelineTests {
         #expect(ring.count == 800 && ring.timeline?.queuedFrames == 400)
     }
 
+    @Test func deliveryLossFlushesPcmAndTimingButRetainsOutputPolicy() throws {
+        var ring = try makeRing()
+        ring.append(pcm(frames: 480), channels: 2, time: 100)
+        _ = ring.beginRender(frames: 80, channels: 2, expectedGeneration: 7)
+        ring.finishRender(playedFrames: 80, requestedFrames: 80, channels: 2, hostTime: 1)
+        let epoch = try #require(ring.renderedPosition).timelineEpoch
+        ring.discardQueuedAudio()
+        #expect(ring.count == 0 && ring.read == 0 && !ring.playing)
+        #expect(ring.timeline?.queuedFrames == 0 && ring.renderedPosition == nil)
+        #expect(ring.startThreshold == 960 && ring.maxBuffered == 4000)
+        #expect(ring.generation == 7 && ring.startTime == 42)
+        ring.append(pcm(frames: 480), channels: 2, time: 900)
+        _ = ring.beginRender(frames: 80, channels: 2, expectedGeneration: 7)
+        ring.finishRender(playedFrames: 80, requestedFrames: 80, channels: 2, hostTime: 2)
+        let recovered = try #require(ring.renderedPosition)
+        #expect(recovered.startTime == 900 && recovered.timelineEpoch != epoch)
+    }
+
     private func makeRing(channels: Int = 2) throws -> AudioPlayer.Ring {
         let policy = try #require(AudioBufferingPolicy(channels: channels, sampleRate: 8000))
         return AudioPlayer.Ring(samples: Array(repeating: 0, count: policy.capacitySamples),

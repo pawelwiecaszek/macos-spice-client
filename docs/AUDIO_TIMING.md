@@ -69,14 +69,35 @@ whole-frame rejection, underrun/rebuffering and stale generations. Channel tests
 START and DATA timestamps. Audio hardware and route/presentation feedback remain separate
 gates; no live A/V synchronization is claimed.
 
+## Control-safe playback delivery
+
+Playback delivery now uses one bounded mailbox rather than a newest-only event
+stream that can silently evict START/STOP. Its pull-based AsyncStream adds no second
+queue. Defaults cap retained events at 500, external controls at 64 and encoded audio
+at 8 MiB; an individual packet is at most 64 KiB. Producer delivery resumes waiting
+consumers outside the mutex and does not launch a task per packet.
+
+Audio pressure removes all queued DATA and older loss markers, preserving the order
+of retained START/STOP, volume, mute and minimum-buffer events. One discontinuity marker
+precedes subsequent DATA. The app clears queued PCM, invalidates frame timing and
+recreates an active Opus decoder before accepting fresh packets. Output format and
+minimum-buffer policy remain active, and fresh frames establish a new timing epoch.
+
+When controls plus required markers cannot fit, or a packet exceeds the supported
+bound, delivery ends explicitly with STOP then EOF. The optional playback channel
+terminates; this does not shut down the VDI. Delivery-limit failures retain a typed
+packet/control/event-limit reason and reach session diagnostics instead of being
+suppressed as intentional cancellation. A new playback channel/session may be
+needed to resume audio after that failure. Normal producer close is idempotent and
+also stops playback; canceled consumers release pending continuations. The app's
+non-canceled EOF path stops output even without a separate server STOP message.
+
 ## Remaining timing work
 
-Next settle audio/control event delivery under overload, then associate source-render
-positions with actual presentation delay, timestamp freshness and audio-route/rate epochs.
-The playback AsyncStream still mixes bounded newest audio/control events, so control
-loss under overload needs attention before clock feedback. Main-channel MultimediaClock
-remains independent of playback, and queued milliseconds are not actual output delay.
-Do not feed requested minimum buffering or a stale source-render snapshot into it as
-though either measured presentation. Video scheduling must consume the settled clock
-before claiming A/V sync. Live same-guest drift comparisons remain pending.
-No installed application or PR is updated by this local slice.
+Next associate source-render positions with actual presentation delay, timestamp
+freshness and audio-route/rate epochs. Main-channel MultimediaClock remains independent
+of playback, and queued milliseconds are not actual output delay. Do not feed requested
+minimum buffering or a stale source-render snapshot into it as though either measured
+presentation. Video scheduling must consume the settled clock before claiming A/V sync.
+Live same-guest drift comparisons remain pending. No installed application or PR is
+updated by these local slices.
