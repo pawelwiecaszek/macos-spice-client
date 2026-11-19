@@ -82,12 +82,12 @@ final class AudioController {
 
     private func handle(_ event: PlaybackEvent) {
         switch event {
-        case .start(let channels, let frequency):
+        case .start(let channels, let frequency, let time):
             playbackChannels = channels
             decoder = opusDecode && frequency == Int(OpusCodec.sampleRate) ? OpusDecoder(channels: channels) : nil
             do {
                 try player.start(channels: channels, sampleRate: frequency,
-                                 minimumLatencyMilliseconds: minimumPlaybackLatency)
+                                 minimumLatencyMilliseconds: minimumPlaybackLatency, time: time)
                 applyVolume()
                 hasPlayback = true
             } catch {
@@ -100,13 +100,14 @@ final class AudioController {
             minimumPlaybackLatency = 0
             decoder = nil
             hasPlayback = false
-        case .data(let mode, _, let bytes):
+        case .data(let mode, let time, let bytes):
             switch mode {
             case .raw:
+                guard bytes.count % (playbackChannels * 2) == 0 else { return }
                 let samples = bytes.withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }
-                player.enqueue(samples)
+                player.enqueue(samples, time: time)
             case .opus:
-                if let pcm = decoder?.decode(bytes) { player.enqueue(pcm) }
+                if let pcm = decoder?.decode(bytes) { player.enqueue(pcm, time: time) }
             default:
                 break
             }

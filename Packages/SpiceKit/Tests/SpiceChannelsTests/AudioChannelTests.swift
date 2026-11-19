@@ -21,7 +21,7 @@ struct AudioChannelTests {
         var start = ByteWriter()
         start.writeU32(2); start.writeU16(1); start.writeU32(48_000); start.writeU32(1234)
         try await server.send(PlaybackServerMessage.start.rawValue, start.bytes)
-        #expect(await it.next() == .start(channels: 2, frequency: 48_000))
+        #expect(await it.next() == .start(channels: 2, frequency: 48_000, time: 1234))
 
         var mode = ByteWriter(); mode.writeU32(5); mode.writeU16(AudioDataMode.opus.rawValue)
         try await server.send(PlaybackServerMessage.mode.rawValue, mode.bytes)
@@ -82,7 +82,7 @@ struct AudioChannelTests {
         var start = ByteWriter()
         start.writeU32(2); start.writeU16(1); start.writeU32(48_000); start.writeU32(1234)
         try await server.send(PlaybackServerMessage.start.rawValue, start.bytes)
-        #expect(await iterator.next() == .start(channels: 2, frequency: 48_000))
+        #expect(await iterator.next() == .start(channels: 2, frequency: 48_000, time: 1234))
         latency = ByteWriter(); latency.writeU32(.max)
         try await server.send(PlaybackServerMessage.latency.rawValue, latency.bytes)
         #expect(await iterator.next() == .latency(milliseconds: .max))

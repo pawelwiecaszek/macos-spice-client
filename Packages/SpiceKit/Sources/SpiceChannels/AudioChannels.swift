@@ -2,7 +2,7 @@ import SpiceWire
 
 /// Events from the playback channel (guest → speakers).
 public enum PlaybackEvent: Sendable, Equatable {
-    case start(channels: Int, frequency: Int)
+    case start(channels: Int, frequency: Int, time: UInt32)
     case stop
     /// One packet: raw S16LE interleaved PCM, or one Opus frame.
     case data(mode: AudioDataMode, time: UInt32, bytes: [UInt8])
@@ -56,7 +56,8 @@ public actor PlaybackChannel {
                         log.error("unsupported audio format \(start.format)")
                         continue
                     }
-                    events.yield(.start(channels: Int(start.channels), frequency: Int(start.frequency)))
+                    guard let time = start.time else { throw WireError.invalidValue("playback start time") }
+                    events.yield(.start(channels: Int(start.channels), frequency: Int(start.frequency), time: time))
                 case .stop:
                     events.yield(.stop)
                 case .volume:
