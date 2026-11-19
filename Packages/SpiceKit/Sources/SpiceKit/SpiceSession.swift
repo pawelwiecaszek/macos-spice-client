@@ -4,6 +4,7 @@
 @_exported import SpiceTransport
 @_exported import AudioHost
 @_exported import Proxmox
+@_exported import Ravada
 @_exported import SmartcardHost
 @_exported import SpiceWire
 @_exported import USBEmulation
@@ -104,7 +105,8 @@ public actor SpiceSession {
     public nonisolated let cursorEvents: AsyncStream<CursorEvent>
     public nonisolated let usbEvents: AsyncStream<USBSlotEvent>
     public nonisolated let smartcardEvents: AsyncStream<SmartcardEvent>
-    /// Guest audio to play (bounded: about 5 s of 10 ms packets; older ones are dropped).
+    /// Guest audio for one consumer. Bounded packet loss is explicit; START/STOP
+    /// and other control events are never silently evicted by an audio burst.
     public nonisolated let playbackEvents: AsyncStream<PlaybackEvent>
     /// Guest requests to start/stop recording from the microphone.
     public nonisolated let recordEvents: AsyncStream<RecordEvent>
@@ -119,7 +121,7 @@ public actor SpiceSession {
     private nonisolated let cursorSink: AsyncStream<CursorEvent>.Continuation
     private nonisolated let usbSink: AsyncStream<USBSlotEvent>.Continuation
     private nonisolated let smartcardSink: AsyncStream<SmartcardEvent>.Continuation
-    private nonisolated let playbackSink: AsyncStream<PlaybackEvent>.Continuation
+    private nonisolated let playbackSink: PlaybackEventBuffer
     private nonisolated let recordSink: AsyncStream<RecordEvent>.Continuation
     private var playback: PlaybackChannel?
     private var record: RecordChannel?
@@ -130,7 +132,7 @@ public actor SpiceSession {
     private let inputQueue: AsyncStream<InputEvent>
 
     private let opener: ChannelOpener
-    private let clock = MultimediaClock()
+    private nonisolated let clock = MultimediaClock()
     private let configurationError: TransportError?
     private let ticket: SecretTicket?
     private let log = ChannelLogger(category: "session")
@@ -160,7 +162,7 @@ public actor SpiceSession {
         (inputQueue, inputSink) = AsyncStream.makeStream(bufferingPolicy: .unbounded)
         (usbEvents, usbSink) = AsyncStream.makeStream(bufferingPolicy: .unbounded)
         (smartcardEvents, smartcardSink) = AsyncStream.makeStream(bufferingPolicy: .unbounded)
-        (playbackEvents, playbackSink) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(500))
+        (playbackEvents, playbackSink) = PlaybackEventBuffer.makeStream()
         (recordEvents, recordSink) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(16))
         (clipboardEvents, clipboardSink) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(16))
         usbAllowed = profile.enableUSBRedirection != false
@@ -251,7 +253,7 @@ public actor SpiceSession {
             let (mainEvents, mainSink) = AsyncStream<MainEvent>.makeStream()
             let main = MainChannel(connection: connection, events: mainSink, clock: clock)
             self.main = main
-            spawn("main", critical: true) { try await main.run() }
+            spawn("main", critical: true, connection: connection) { try await main.run() }
             tasks.append(Task { [weak self] in
                 for await event in mainEvents { await self?.handle(event) }
             })
@@ -347,6 +349,19 @@ public actor SpiceSession {
     public func configureAudio(_ support: AudioSupport) {
         audio = support
     }
+
+    /// A synchronous mutex-backed lease avoids late actor hops resurrecting an
+    /// older playback producer after replacement on the main actor.
+    public nonisolated func beginAudioClock() -> UInt64 { clock.beginAudio() }
+
+    @discardableResult
+    public nonisolated func updateAudioClock(time: UInt32, epoch: UInt64, at: ContinuousClock.Instant,
+                                            delayMilliseconds: UInt32? = nil) -> Bool {
+        clock.updateAudio(time: time, epoch: epoch, at: at, delayMilliseconds: delayMilliseconds)
+    }
+
+    public nonisolated func invalidateAudioClock(epoch: UInt64) { clock.invalidateAudio(epoch: epoch) }
+    public nonisolated func endAudioClock(epoch: UInt64) { clock.endAudio(epoch: epoch) }
 
     /// Sends captured microphone audio (raw S16LE or one Opus frame) while the guest records.
     public func sendMicrophone(_ bytes: [UInt8], mode: AudioDataMode) async {
@@ -567,7 +582,7 @@ public actor SpiceSession {
         channelsRequested = true
         let opener = self.opener
         let audioCaps = audio
-        // Only the first display channel is rendered in v1 (multi-monitor groundwork in M6).
+        // Each supported display channel has independent rendering/cache state.
         // The list is server-controlled: drop duplicate (type, id) pairs and cap how many
         // connections it can make us open (one per singleton channel, 16 USB slots).
         var seen = Set<ChannelsList.Entry>()
@@ -596,6 +611,8 @@ public actor SpiceSession {
         }
         log.info("server lists \(list.count) channels; opening \(wanted.count)")
         do {
+            // Declare opening peers before concurrent links; barriers may arrive first.
+            try await opener.synchronization.expect(wanted.map { .init(rawType: $0.rawType, id: $0.id) })
             try await withThrowingTaskGroup(of: ChannelConnection?.self) { group in
                 for entry in wanted {
                     guard let type = entry.type else { continue }
@@ -612,6 +629,7 @@ public actor SpiceSession {
                         do {
                             return try await opener.open(type: type, id: entry.id, connectionID: sessionID, channelCaps: caps)
                         } catch where [ChannelType.usbredir, .smartcard, .playback, .record].contains(type) {
+                            await opener.synchronization.unavailable(.init(type: type, id: entry.id))
                             return nil  // optional devices must not end the session
                         }
                     }
@@ -651,7 +669,7 @@ public actor SpiceSession {
         case .usbredir:
             let channel = USBRedirChannel(slot: Int(id), connection: connection, events: usbSink)
             usbSlots.append(channel)
-            spawn("usbredir \(id)", critical: false) { [weak self] in
+            spawn("usbredir \(id)", critical: false, connection: connection) { [weak self] in
                 do {
                     try await channel.run()
                 } catch {
@@ -662,15 +680,15 @@ public actor SpiceSession {
         case .playback:
             let channel = PlaybackChannel(connection: connection, events: playbackSink)
             playback = channel
-            spawn("playback", critical: false) { try await channel.run() }
+            spawn("playback", critical: false, connection: connection) { try await channel.run() }
         case .record:
             let channel = RecordChannel(connection: connection, events: recordSink)
             record = channel
-            spawn("record", critical: false) { try await channel.run() }
+            spawn("record", critical: false, connection: connection) { try await channel.run() }
         case .smartcard:
             let channel = SmartcardChannel(connection: connection, events: smartcardSink)
             smartcard = channel
-            spawn("smartcard", critical: false) { [weak self] in
+            spawn("smartcard", critical: false, connection: connection) { [weak self] in
                 do {
                     try await channel.run()
                 } catch {
@@ -681,7 +699,7 @@ public actor SpiceSession {
         case .display where id == 0:
             let channel = DisplayChannel(connection: connection, events: displaySink, credit: displayCredit, clock: clock)
             display = channel
-            spawn("display", critical: true) { try await channel.run() }
+            spawn("display", critical: true, connection: connection) { try await channel.run() }
         case .display:
             // Additional monitor: its own stream, forwarded tagged with the display id.
             let (stream, sink) = AsyncStream<DisplayEvent>.makeStream(bufferingPolicy: .unbounded)
@@ -693,15 +711,15 @@ public actor SpiceSession {
                 for await event in stream { forward.yield(SecondaryDisplayEvent(display: id, event: event)) }
                 forward.yield(SecondaryDisplayEvent(display: id, event: .primarySurfaceDestroyed(surfaceID: 0)))
             })
-            spawn("display \(id)", critical: false) { try await channel.run() }
+            spawn("display \(id)", critical: false, connection: connection) { try await channel.run() }
         case .inputs:
             let channel = InputsChannel(connection: connection)
             inputs = channel
-            spawn("inputs", critical: true) { try await channel.run() }
+            spawn("inputs", critical: true, connection: connection) { try await channel.run() }
         case .cursor:
             let channel = CursorChannel(connection: connection, events: cursorSink)
             cursor = channel
-            spawn("cursor", critical: false) { try await channel.run() }
+            spawn("cursor", critical: false, connection: connection) { try await channel.run() }
         default:
             break
         }
@@ -716,13 +734,16 @@ public actor SpiceSession {
         }
     }
 
-    private func spawn(_ name: String, critical: Bool, _ body: @escaping @Sendable () async throws -> Void) {
+    private func spawn(_ name: String, critical: Bool, connection: ChannelConnection,
+                       _ body: @escaping @Sendable () async throws -> Void) {
         tasks.append(Task { [weak self] in
             do {
                 try await body()
-            } catch is CancellationError {
-                return
+                await connection.close()
             } catch {
+                // A failed handler must close its ordering identity before peers can wait.
+                await connection.close()
+                if error is CancellationError { return }
                 await self?.channelEnded(name, critical: critical, error: error)
             }
         })
@@ -755,6 +776,10 @@ public actor SpiceSession {
     private func teardown(reason: SessionFailure?) async {
         if case .disconnected = state { return }
         setState(.disconnected(reason))
+        clock.reset()
+        // Wake barriers before sequential channel close awaits; old sessions cannot
+        // publish progress into a replacement session's independent opener/coordinator.
+        await opener.synchronization.shutdown()
         failFileTransfers(.cancelled)
         for task in tasks { task.cancel() }
         ticket?.wipe()
