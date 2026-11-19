@@ -3,6 +3,35 @@ import Testing
 
 #if canImport(AVFoundation)
 struct AudioRenderTimelineTests {
+    @Test func continuousHostAnchorResetsAcrossGapsAndConfigurationChanges() throws {
+        var ring = try makeRing()
+        ring.hostTicksPerSecond = 1000
+        ring.append(pcm(frames: 480), channels: 2, time: 100)
+        _ = ring.beginRender(frames: 80, channels: 2, expectedGeneration: 7)
+        ring.finishRender(playedFrames: 80, requestedFrames: 80, channels: 2, hostTime: 1000)
+        #expect(ring.renderedPosition?.continuousStartHostTime == 1000)
+        ring.finishRender(playedFrames: 80, requestedFrames: 80, channels: 2, hostTime: 1010)
+        #expect(ring.renderedPosition?.continuousStartHostTime == 1000)
+        ring.finishRender(playedFrames: 80, requestedFrames: 80, channels: 2, hostTime: 2000)
+        #expect(ring.renderedPosition?.continuousStartHostTime == 2000)
+        ring.configurationDidChange()
+        #expect(ring.renderedPosition == nil && ring.count == 0)
+        #expect(ring.beginRender(frames: 80, channels: 2, expectedGeneration: 7) == nil)
+    }
+
+    @Test func microphoneRejectsUnsupportedFormatsBeforeAccessingInputHardware() {
+        let microphone = MicrophoneCapture()
+        for channels in [0,3,8,Int.max] {
+            #expect(throws: MicrophoneCapture.CaptureError.unsupportedFormat) {
+                try microphone.start(channels: channels, sampleRate: 48000, useOpus: false) { _ in }
+            }
+        }
+        #expect(throws: MicrophoneCapture.CaptureError.unsupportedFormat) {
+            try microphone.start(channels: 1, sampleRate: Int.max, useOpus: false) { _ in }
+        }
+        #expect(!microphone.isRunning)
+    }
+
     @Test func prebufferSilenceDoesNotAdvancePacketTime() throws {
         var ring = try makeRing()
         ring.append(pcm(frames: 80), channels: 2, time: 100)

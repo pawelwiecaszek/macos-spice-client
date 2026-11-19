@@ -103,11 +103,15 @@ public enum RecordEvent: Sendable, Equatable {
     case mute(Bool)
 }
 
+public enum RecordDeliveryFailure: Error, Sendable { case controlLimit }
+
 /// Record channel: the guest asks for audio with START; the client answers with MODE,
 /// START_MARK and then DATA packets until STOP.
 public actor RecordChannel {
     public static func capabilities(opus: Bool) -> CapabilitySet {
-        var bits = [RecordCapability.volume.rawValue]
+        // Capture gain/mute are not applied by the host yet. Do not claim that
+        // the guest applies these controls on our behalf (spice-gtk 0.42).
+        var bits: [Int] = []
         if opus { bits.append(RecordCapability.opus.rawValue) }
         return CapabilitySet(bits: bits)
     }
@@ -131,6 +135,7 @@ public actor RecordChannel {
         defer {
             active = false
             events.yield(.stop)
+            events.finish()
         }
         while true {
             await connection.messageHandled()
@@ -143,17 +148,21 @@ public actor RecordChannel {
                     active = true
                     markSent = false
                     sentMode = nil
-                    events.yield(.start(channels: Int(start.channels), frequency: Int(start.frequency)))
+                    try emit(.start(channels: Int(start.channels), frequency: Int(start.frequency)))
                 case .stop:
                     active = false
-                    events.yield(.stop)
+                    try emit(.stop)
                 case .volume:
-                    events.yield(.volume(try AudioVolume(decoding: message.payload).normalized))
+                    try emit(.volume(try AudioVolume(decoding: message.payload).normalized))
                 case .mute:
-                    events.yield(.mute(message.payload.first.map { $0 != 0 } ?? false))
+                    try emit(.mute(message.payload.first.map { $0 != 0 } ?? false))
                 case nil:
                     continue
                 }
+            } catch let failure as RecordDeliveryFailure {
+                throw failure
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 log.error("malformed record message \(message.type): \(error)")
             }
@@ -179,6 +188,17 @@ public actor RecordChannel {
     }
 
     public func close() async {
+        active = false
+        events.finish()
         await connection.close()
+    }
+
+    private func emit(_ event: RecordEvent) throws {
+        switch events.yield(event) {
+        case .enqueued: break
+        case .dropped: events.finish(); throw RecordDeliveryFailure.controlLimit
+        case .terminated: throw CancellationError()
+        @unknown default: events.finish(); throw RecordDeliveryFailure.controlLimit
+        }
     }
 }

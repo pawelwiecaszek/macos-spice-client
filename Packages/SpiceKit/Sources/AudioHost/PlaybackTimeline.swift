@@ -168,6 +168,20 @@ public struct PlaybackTimeline: Sendable {
         epoch &+= 1
     }
 
+    /// End of the queued interval only when every queued region belongs to the
+    /// rendered epoch. Unknown regions must not become a fabricated delay.
+    public func queuedEndTime(epoch expectedEpoch: UInt64) -> UInt32? {
+        guard queuedFrames > 0 else { return nil }
+        var last: Segment?
+        for offset in 0..<segmentCount {
+            guard let segment = segments[(head + offset) % maxSegments], segment.anchor != nil,
+                  segment.epoch == expectedEpoch else { return nil }
+            last = segment
+        }
+        guard let last, let anchor = last.anchor else { return nil }
+        return timestamp(anchor: anchor, frame: last.firstFrame + Int64(last.frames))
+    }
+
     private mutating func collapseToUnknown() {
         head = 0
         segmentCount = queuedFrames > 0 ? 1 : 0

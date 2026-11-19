@@ -5,6 +5,30 @@ import SpiceWire
 
 @Suite("Audio channels", .timeLimit(.minutes(1)))
 struct AudioChannelTests {
+    @Test func recordCapabilitiesDoNotClaimUnimplementedCaptureVolume() {
+        #expect(!RecordChannel.capabilities(opus: false).contains(RecordCapability.volume.rawValue))
+        #expect(!RecordChannel.capabilities(opus: false).contains(RecordCapability.opus.rawValue))
+        #expect(RecordChannel.capabilities(opus: true).contains(RecordCapability.opus.rawValue))
+        #expect(PlaybackChannel.capabilities(opus: false).contains(PlaybackCapability.latency.rawValue))
+    }
+
+    @Test func recordControlOverflowTerminatesInsteadOfLosingStopSilently() async throws {
+        let (connection, server) = await pair(.record)
+        let (events, sink) = AsyncStream<RecordEvent>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let channel = RecordChannel(connection: connection, events: sink)
+        let loop = Task { try await channel.run() }
+        var start = ByteWriter(); start.writeU32(1); start.writeU16(1); start.writeU32(48000)
+        try await server.send(RecordServerMessage.start.rawValue, start.bytes)
+        try await server.send(RecordServerMessage.stop.rawValue, [])
+        do { try await loop.value; Issue.record("Record delivery overflow must end the channel") }
+        catch is RecordDeliveryFailure { }
+        catch { Issue.record("Unexpected record failure: \(error)") }
+        #expect(await channel.isActive == false)
+        var iterator = events.makeAsyncIterator()
+        while await iterator.next() != nil { }
+        await channel.close()
+    }
+
     @Test func playbackDeliveryOverflowEscapesAsALimitFailure() async throws {
         let (connection, server) = await pair(.playback)
         let buffer = try #require(PlaybackEventBuffer(maxEvents: 4, maxControls: 1, maxAudioBytes: 100))

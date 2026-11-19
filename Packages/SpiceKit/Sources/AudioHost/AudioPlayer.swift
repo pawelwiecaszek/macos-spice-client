@@ -1,5 +1,6 @@
 #if canImport(AVFoundation)
 import AVFoundation
+import CoreAudio
 import Synchronization
 
 public enum AudioPlayerError: Error, Sendable {
@@ -16,6 +17,7 @@ public struct AudioRenderPosition: Sendable, Equatable {
     public let sampleRate: Int
     public let playbackEpoch: UInt64
     public let timelineEpoch: UInt64
+    public let continuousStartHostTime: UInt64?
 }
 
 /// Plays the guest's audio: interleaved S16 PCM goes into a jitter buffer that an
@@ -30,6 +32,15 @@ public final class AudioPlayer: @unchecked Sendable {
     private var source: AVAudioSourceNode?
     private let ring = RingBox()
     private var renderGeneration: UInt64 = 0
+    private var configurationObserver: (any NSObjectProtocol)?
+    private var configuration: Configuration?
+    private var observedLatency: Double?
+    private struct Configuration {
+        var channels: Int
+        var sampleRate: Int
+        var minimum: UInt32
+        var time: UInt32?
+    }
     public private(set) var channels = 2
     public private(set) var sampleRate = 48_000
 
@@ -51,6 +62,8 @@ public final class AudioPlayer: @unchecked Sendable {
         var renderedPosition: AudioRenderPosition?
         var generation: UInt64 = 0
         var startTime: UInt32?
+        var hostTicksPerSecond: Double = 0
+        var configurationChanged = false
 
         mutating func apply(_ policy: AudioBufferingPolicy) {
             let previousThreshold = startThreshold
@@ -96,9 +109,19 @@ public final class AudioPlayer: @unchecked Sendable {
             let consumed = timeline?.consume(frames: played)
             if played == requestedFrames, played > 0, let consumed,
                let start = consumed.startTime, let end = consumed.endTime, let timeline {
+                var continuous = hostTime
+                if let previous = renderedPosition, previous.playbackEpoch == generation,
+                   previous.timelineEpoch == consumed.epoch, previous.endTime == start,
+                   let previousHost = previous.hostTime, let hostTime {
+                    let delta = hostTime >= previousHost ? Double(hostTime - previousHost) : -Double(previousHost - hostTime)
+                    let expected = Double(previous.frameCount) / Double(previous.sampleRate)
+                    if hostTicksPerSecond == 0 || abs(delta / hostTicksPerSecond - expected) <= 0.005 {
+                        continuous = previous.continuousStartHostTime
+                    }
+                }
                 renderedPosition = AudioRenderPosition(startTime: start, endTime: end, hostTime: hostTime,
                     frameCount: played, sampleRate: timeline.sampleRate, playbackEpoch: generation,
-                    timelineEpoch: consumed.epoch)
+                    timelineEpoch: consumed.epoch, continuousStartHostTime: continuous)
             } else { renderedPosition = nil }
             read = (read + played * channels) % max(samples.count, 1)
             count -= played * channels
@@ -109,7 +132,7 @@ public final class AudioPlayer: @unchecked Sendable {
         }
 
         mutating func beginRender(frames: Int, channels: Int, expectedGeneration: UInt64) -> Int? {
-            guard generation == expectedGeneration, !samples.isEmpty else { return nil }
+            guard generation == expectedGeneration, !configurationChanged, !samples.isEmpty else { return nil }
             if !playing, count >= startThreshold { playing = true }
             return playing ? min(frames, count / channels) : 0
         }
@@ -121,9 +144,18 @@ public final class AudioPlayer: @unchecked Sendable {
             timeline?.reset()
             renderedPosition = nil
         }
+
+        mutating func configurationDidChange() {
+            configurationChanged = true
+            discardQueuedAudio()
+        }
     }
 
     public init() {}
+
+    deinit {
+        if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
+    }
 
     /// (Re)configures for a new stream and starts the engine.
     public func start(channels: Int, sampleRate: Int, minimumLatencyMilliseconds: UInt32 = 0,
@@ -133,13 +165,16 @@ public final class AudioPlayer: @unchecked Sendable {
             throw AudioPlayerError.invalidFormat
         }
         stop()
+        configuration = Configuration(channels: channels, sampleRate: sampleRate,
+                                      minimum: minimumLatencyMilliseconds, time: time)
         self.channels = channels
         self.sampleRate = sampleRate
         let generation = renderGeneration
         ring.withLock { ring in
             ring = Ring(samples: [Float](repeating: 0, count: policy.capacitySamples),
                         startThreshold: policy.startThresholdSamples, maxBuffered: policy.maximumBufferedSamples,
-                        timeline: PlaybackTimeline(sampleRate: sampleRate), generation: generation, startTime: time)
+                        timeline: PlaybackTimeline(sampleRate: sampleRate), generation: generation, startTime: time,
+                        hostTicksPerSecond: AudioGetHostClockFrequency())
         }
         guard let format = AVAudioFormat(standardFormatWithSampleRate: Double(sampleRate),
                                          channels: AVAudioChannelCount(channels)) else {
@@ -181,6 +216,15 @@ public final class AudioPlayer: @unchecked Sendable {
         engine.prepare()
         do { try engine.start() }
         catch { stop(); throw error }
+        configurationObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange,
+            object: engine, queue: nil) { [ring] _ in
+                // Apple delivers this on an internal queue. Only invalidate data
+                // here; the owning executor performs graph teardown/restart later.
+                ring.withLock { state in
+                    guard state.generation == generation else { return }
+                    state.configurationDidChange()
+                }
+            }
     }
 
     /// Queues interleaved S16 samples.
@@ -197,6 +241,7 @@ public final class AudioPlayer: @unchecked Sendable {
     /// Retunes an active queue. This is a buffering target, not output-delay feedback.
     /// A stopped player has no pending policy; pass the latest request to `start`.
     public func setMinimumLatency(milliseconds: UInt32) {
+        configuration?.minimum = milliseconds
         guard let policy = AudioBufferingPolicy(channels: channels, sampleRate: sampleRate,
                                                 minimumLatencyMilliseconds: milliseconds) else { return }
         ring.withLock { state in
@@ -207,6 +252,10 @@ public final class AudioPlayer: @unchecked Sendable {
 
     public func stop() {
         renderGeneration &+= 1
+        if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
+        configurationObserver = nil
+        configuration = nil
+        observedLatency = nil
         engine.stop()
         if let source {
             engine.detach(source)
@@ -229,5 +278,58 @@ public final class AudioPlayer: @unchecked Sendable {
 
     /// Nil during silence, unknown timing, rebuffering, or after a lifecycle reset.
     public var renderedPosition: AudioRenderPosition? { ring.withLock { $0.renderedPosition } }
+
+    public var needsReconfiguration: Bool {
+        configuration != nil && (ring.withLock { $0.configurationChanged } || !engine.isRunning)
+    }
+
+    /// Rebuild on the owner executor, never inside Apple's configuration callback.
+    @discardableResult
+    public func restartIfNeeded() throws -> Bool {
+        guard needsReconfiguration, let saved = configuration else { return false }
+        do {
+            try start(channels: saved.channels, sampleRate: saved.sampleRate,
+                      minimumLatencyMilliseconds: saved.minimum, time: saved.time)
+            return true
+        } catch {
+            configuration = saved // Preserve the active request for a bounded-rate retry.
+            ring.withLock { $0.configurationChanged = true }
+            throw error
+        }
+    }
+
+    /// Estimated audible position from HAL host time plus downstream latency once.
+    /// Unknown latency, silence, stale data or route changes yield no authority.
+    public func presentationObservation() -> (estimate: AudioPresentationEstimate, position: AudioRenderPosition, playbackDelayMilliseconds: UInt32?)? {
+        guard !needsReconfiguration, engine.isRunning, let source else { return nil }
+        let latency = source.outputPresentationLatency
+        guard latency.isFinite, latency > 0, latency <= 1 else { return nil }
+        if let previous = observedLatency, abs(latency - previous) > 0.001 {
+            observedLatency = latency
+            discardQueuedAudio()
+            return nil
+        }
+        observedLatency = latency
+        let snapshot = ring.withLock { state -> (AudioRenderPosition?, UInt32?) in
+            guard let position = state.renderedPosition else { return (nil, nil) }
+            let end = state.timeline?.queuedFrames == 0 ? position.endTime :
+                state.timeline?.queuedEndTime(epoch: position.timelineEpoch)
+            return (position, end)
+        }
+        guard let position = snapshot.0, let host = position.hostTime,
+              let continuous = position.continuousStartHostTime else { return nil }
+        let now = AudioGetCurrentHostTime()
+        func elapsed(since time: UInt64) -> Double {
+            now >= time ? AVAudioTime.seconds(forHostTime: now - time) : -AVAudioTime.seconds(forHostTime: time - now)
+        }
+        guard let estimate = AudioPresentationEstimate.calculate(serverStart: position.startTime,
+            hostTimeDeltaSeconds: elapsed(since: host), outputLatencySeconds: latency,
+            continuousRenderElapsedSeconds: elapsed(since: continuous)) else { return nil }
+        let delay = snapshot.1.flatMap { end -> UInt32? in
+            let difference = Int32(bitPattern: end &- estimate.serverTime)
+            return (0...2500).contains(difference) ? UInt32(difference) : nil
+        }
+        return (estimate, position, delay)
+    }
 }
 #endif

@@ -2,6 +2,18 @@ import Testing
 @testable import AudioHost
 
 struct PlaybackTimelineTests {
+    @Test func queuedEndpointIsKnownOnlyWithinTheRenderedEpoch() throws {
+        var timeline = try timeline()
+        _ = timeline.append(frameCount: 480, time: 1000)
+        let epoch = timeline.epoch
+        #expect(timeline.queuedEndTime(epoch: epoch) == 1010)
+        #expect(timeline.queuedEndTime(epoch: epoch &+ 1) == nil)
+        _ = timeline.append(frameCount: 480, time: nil)
+        #expect(timeline.queuedEndTime(epoch: epoch) == nil)
+        _ = timeline.consume(frames: 960)
+        #expect(timeline.queuedEndTime(epoch: epoch) == nil)
+    }
+
     @Test func partialConsumptionAndTrimmingKeepTheOriginalPacketAnchor() throws {
         var timeline = try timeline()
         #expect(timeline.append(frameCount: 480, time: 1000).accepted)

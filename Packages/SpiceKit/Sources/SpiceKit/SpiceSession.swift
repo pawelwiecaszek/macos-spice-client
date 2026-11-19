@@ -132,7 +132,7 @@ public actor SpiceSession {
     private let inputQueue: AsyncStream<InputEvent>
 
     private let opener: ChannelOpener
-    private let clock = MultimediaClock()
+    private nonisolated let clock = MultimediaClock()
     private let configurationError: TransportError?
     private let ticket: SecretTicket?
     private let log = ChannelLogger(category: "session")
@@ -349,6 +349,19 @@ public actor SpiceSession {
     public func configureAudio(_ support: AudioSupport) {
         audio = support
     }
+
+    /// A synchronous mutex-backed lease avoids late actor hops resurrecting an
+    /// older playback producer after replacement on the main actor.
+    public nonisolated func beginAudioClock() -> UInt64 { clock.beginAudio() }
+
+    @discardableResult
+    public nonisolated func updateAudioClock(time: UInt32, epoch: UInt64, at: ContinuousClock.Instant,
+                                            delayMilliseconds: UInt32? = nil) -> Bool {
+        clock.updateAudio(time: time, epoch: epoch, at: at, delayMilliseconds: delayMilliseconds)
+    }
+
+    public nonisolated func invalidateAudioClock(epoch: UInt64) { clock.invalidateAudio(epoch: epoch) }
+    public nonisolated func endAudioClock(epoch: UInt64) { clock.endAudio(epoch: epoch) }
 
     /// Sends captured microphone audio (raw S16LE or one Opus frame) while the guest records.
     public func sendMicrophone(_ bytes: [UInt8], mode: AudioDataMode) async {
@@ -763,6 +776,7 @@ public actor SpiceSession {
     private func teardown(reason: SessionFailure?) async {
         if case .disconnected = state { return }
         setState(.disconnected(reason))
+        clock.reset()
         // Wake barriers before sequential channel close awaits; old sessions cannot
         // publish progress into a replacement session's independent opener/coordinator.
         await opener.synchronization.shutdown()

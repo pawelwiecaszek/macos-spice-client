@@ -143,6 +143,10 @@ bounded decoding and rendering; see
 [text scope](TEXT_DRAWING.md).
 
 [C1 acceptance review](C1_DRAWING_ACCEPTANCE.md) passes the scoped automated baseline,
-with live captures recorded as pending. C3 now begins with bounded server-directed
-playback buffering and packet-to-rendered-frame timing. Control-safe playback delivery is also implemented.
-Presentation delay, route changes, clock feedback and video scheduling remain separate slices. See [audio buffering](AUDIO_TIMING.md).
+with live captures recorded as pending. C3 implements bounded server-directed
+playback buffering, packet-to-rendered-frame timing, control-safe delivery,
+presentation calibration, route invalidation/rebuild, multimedia-clock feedback and
+bounded video deadline scheduling/reporting. Automated regressions pass; live
+same-guest A/V drift, output-route and microphone acceptance remain pending.
+See [media timing and evidence](AUDIO_TIMING.md). C4 monitor work and Phase 6 broker
+actions remain separate scopes.

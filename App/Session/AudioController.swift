@@ -22,6 +22,13 @@ final class AudioController {
     @ObservationIgnored private var decoder: OpusDecoder?
     @ObservationIgnored private var playbackChannels = 2
     @ObservationIgnored private var minimumPlaybackLatency: UInt32 = 0
+    @ObservationIgnored private var audioClockEpoch: UInt64?
+    @ObservationIgnored private var audioFeedbackTask: Task<Void, Never>?
+    @ObservationIgnored private var lastPublishedPosition: AudioRenderPosition?
+    @ObservationIgnored private var nextOutputRetry: ContinuousClock.Instant?
+    @ObservationIgnored private var microphonePermissionEpoch: UInt64 = 0
+    @ObservationIgnored private let requestMicrophonePermission: @Sendable () async -> Bool
+    @ObservationIgnored private(set) var microphonePermissionTask: Task<Void, Never>?
     @ObservationIgnored private var recordFormat: (channels: Int, frequency: Int)?
     @ObservationIgnored private var guestVolume: Float = 1
     @ObservationIgnored private var guestMuted = false
@@ -34,9 +41,11 @@ final class AudioController {
     @ObservationIgnored private let micSink: AsyncStream<MicrophoneCapture.Output>.Continuation
     @ObservationIgnored private let micStream: AsyncStream<MicrophoneCapture.Output>
 
-    init(session: SpiceSession, settings: AppSettings) {
+    init(session: SpiceSession, settings: AppSettings,
+         requestMicrophonePermission: @escaping @Sendable () async -> Bool = { await MicrophoneCapture.requestPermission() }) {
         self.session = session
         self.settings = settings
+        self.requestMicrophonePermission = requestMicrophonePermission
         // Packets from the audio thread are sent strictly in order by one consumer.
         (micStream, micSink) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(100))
     }
@@ -50,17 +59,25 @@ final class AudioController {
     func start() {
         let playback = session.playbackEvents
         tasks.append(Task { [weak self] in
-            for await event in playback { self?.handle(event) }
+            for await event in playback {
+                guard !Task.isCancelled else { break }
+                self?.handle(event)
+            }
             if !Task.isCancelled { self?.handle(PlaybackEvent.stop) }
         })
         let record = session.recordEvents
         tasks.append(Task { [weak self] in
-            for await event in record { self?.handle(event) }
+            for await event in record {
+                guard !Task.isCancelled else { break }
+                self?.handle(event)
+            }
+            if !Task.isCancelled { self?.handle(RecordEvent.stop) }
         })
         let session = self.session
         let microphoneOutput = micStream
         tasks.append(Task {
             for await output in microphoneOutput {
+                guard !Task.isCancelled else { break }
                 switch output {
                 case .raw(let bytes): await session.sendMicrophone(bytes, mode: .raw)
                 case .opus(let frame): await session.sendMicrophone(frame, mode: .opus)
@@ -70,6 +87,13 @@ final class AudioController {
     }
 
     func stop() {
+        microphonePermissionTask?.cancel()
+        microphonePermissionTask = nil
+        microphonePermissionEpoch &+= 1
+        microphoneEnabled = false
+        guestWantsMicrophone = false
+        recordFormat = nil
+        endAudioFeedback()
         for task in tasks { task.cancel() }
         tasks.removeAll()
         player.stop()
@@ -84,6 +108,7 @@ final class AudioController {
     private func handle(_ event: PlaybackEvent) {
         switch event {
         case .start(let channels, let frequency, let time):
+            endAudioFeedback()
             playbackChannels = channels
             decoder = opusDecode && frequency == Int(OpusCodec.sampleRate) ? OpusDecoder(channels: channels) : nil
             do {
@@ -91,12 +116,14 @@ final class AudioController {
                                  minimumLatencyMilliseconds: minimumPlaybackLatency, time: time)
                 applyVolume()
                 hasPlayback = true
+                beginAudioFeedback()
             } catch {
                 decoder = nil
                 hasPlayback = false
                 log.error("audio output failed: \(error.localizedDescription, privacy: .public)")
             }
         case .stop:
+            endAudioFeedback()
             player.stop()
             minimumPlaybackLatency = 0
             decoder = nil
@@ -122,6 +149,7 @@ final class AudioController {
             minimumPlaybackLatency = milliseconds
             player.setMinimumLatency(milliseconds: milliseconds)
         case .discontinuity:
+            if let audioClockEpoch { session.invalidateAudioClock(epoch: audioClockEpoch) }
             player.discardQueuedAudio()
             if decoder != nil { decoder = OpusDecoder(channels: playbackChannels) }
         }
@@ -129,6 +157,62 @@ final class AudioController {
 
     private func applyVolume() {
         player.volume = guestMuted ? 0 : guestVolume
+    }
+
+    private func beginAudioFeedback() {
+        let epoch = session.beginAudioClock()
+        audioClockEpoch = epoch
+        lastPublishedPosition = nil
+        nextOutputRetry = nil
+        audioFeedbackTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard self?.pollAudioClock(epoch: epoch) == true else { return }
+                do { try await Task.sleep(for: .milliseconds(20)) } catch { return }
+            }
+        }
+    }
+
+    private func endAudioFeedback() {
+        audioFeedbackTask?.cancel()
+        audioFeedbackTask = nil
+        if let audioClockEpoch { session.endAudioClock(epoch: audioClockEpoch) }
+        audioClockEpoch = nil
+        lastPublishedPosition = nil
+        nextOutputRetry = nil
+    }
+
+    private func pollAudioClock(epoch: UInt64) -> Bool {
+        guard audioClockEpoch == epoch else { return false }
+        let now = ContinuousClock.now
+        if player.needsReconfiguration {
+            session.invalidateAudioClock(epoch: epoch)
+            lastPublishedPosition = nil
+            guard nextOutputRetry.map({ now >= $0 }) ?? true else { return true }
+            nextOutputRetry = now.advanced(by: .seconds(1))
+            do {
+                if try player.restartIfNeeded() {
+                    if decoder != nil { decoder = OpusDecoder(channels: playbackChannels) }
+                    applyVolume()
+                    hasPlayback = true
+                }
+            } catch {
+                if hasPlayback { log.error("audio route reconfiguration failed: \(error.localizedDescription, privacy: .private)") }
+                hasPlayback = false
+            }
+            return true
+        }
+        guard let observation = player.presentationObservation() else {
+            session.invalidateAudioClock(epoch: epoch)
+            lastPublishedPosition = nil
+            return true
+        }
+        // A repeated snapshot cannot keep old audio authoritative forever.
+        if lastPublishedPosition != observation.position {
+            _ = session.updateAudioClock(time: observation.estimate.serverTime, epoch: epoch, at: .now,
+                                         delayMilliseconds: observation.playbackDelayMilliseconds)
+            lastPublishedPosition = observation.position
+        }
+        return true
     }
 
     // MARK: Microphone
@@ -144,19 +228,27 @@ final class AudioController {
             recordFormat = nil
             microphone.stop()
         case .volume, .mute:
-            break  // the guest applies its own input gain
+            break  // Capability is withheld until local capture gain is implemented.
         }
     }
 
     /// Toolbar toggle. Turning it on asks for macOS microphone permission.
     func toggleMicrophone() {
         if microphoneEnabled {
+            microphonePermissionTask?.cancel()
+            microphonePermissionEpoch &+= 1
             microphoneEnabled = false
             microphone.stop()
             return
         }
-        Task {
-            guard await MicrophoneCapture.requestPermission() else {
+        microphonePermissionEpoch &+= 1
+        let epoch = microphonePermissionEpoch
+        let request = requestMicrophonePermission
+        microphonePermissionTask?.cancel()
+        microphonePermissionTask = Task { [weak self] in
+            let allowed = await request()
+            guard !Task.isCancelled, let self, self.microphonePermissionEpoch == epoch else { return }
+            guard allowed else {
                 errorMessage = String(localized: "MacOS Spice Client isn’t allowed to use the microphone. Allow it in System Settings › Privacy & Security › Microphone.")
                 return
             }

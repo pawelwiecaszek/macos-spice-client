@@ -96,52 +96,22 @@ public actor DisplayChannel {
         var isPrimary: Bool
     }
 
-    /// Statistics collected for SPICE_MSGC_DISPLAY_STREAM_REPORT (lets the server adapt the
-    /// bitrate when frames arrive late or fail to decode).
-    struct ReportWindow {
-        var uniqueID: UInt32
-        var maxFrames: UInt32
-        var timeout: Duration
-        var started: ContinuousClock.Instant?
-        var startFrameTime: UInt32 = 0
-        var endFrameTime: UInt32 = 0
-        var frames: UInt32 = 0
-        var drops: UInt32 = 0
-        var lastDelay: Int32 = 0
-
-        init(uniqueID: UInt32, maxFrames: UInt32, timeout: Duration) {
-            self.uniqueID = uniqueID
-            self.maxFrames = maxFrames
-            self.timeout = timeout
-        }
-    }
-
-    struct VideoStream {
-        var report: ReportWindow?
-        var create: StreamCreate
-        var clip: Clip
-        var destination: Rect
-        #if canImport(VideoToolbox) && canImport(CoreMedia)
-        var decoder: VideoDecoder?
-        #endif
-    }
-
-    private let connection: ChannelConnection
+    let connection: ChannelConnection
     private let events: AsyncStream<DisplayEvent>.Continuation
-    private let log = ChannelLogger(category: "display")
+    let log = ChannelLogger(category: "display")
 
     private var surfaces: [UInt32: SurfaceState] = [:]
     private var surfacePixels = 0
     /// Messages that couldn't be decoded (diagnostics and tests).
     public private(set) var decodeErrorCount = 0
     /// Stops the flush retry loop once the channel is gone.
-    private var closed = false
+    var closed = false
     private var primaryID: UInt32?
     private var dirty: Rect?
     private var flushScheduled = false
     private var resolver = ImageResolver(pixmapCacheBudget: DisplayChannel.pixmapCacheBudget)
     var cachedPixmapCount: Int { resolver.pixmaps.count }
-    private var streams: [UInt32: VideoStream] = [:]
+    var streams: [UInt32: VideoStream] = [:]
     private var warnedTypes: Set<UInt16> = []
 
     /// Hard limits for hostile servers.
@@ -152,9 +122,14 @@ public actor DisplayChannel {
     static let maxStreams = 64
 
     private let credit: DisplayUpdateCredit?
-    private let clock: MultimediaClock?
-    /// Stream reports waiting to be sent (built while handling STREAM_DATA).
-    private var pendingReports: [StreamReport] = []
+    let clock: MultimediaClock?
+    var pendingReports: [QueuedVideoReport] = []
+    var pendingVideoPixels = 0
+    var videoGeneration: UInt64 = 0
+    var videoFrameSequence: UInt64 = 0
+    var videoReportGeneration: UInt64 = 0
+    var videoTimerGeneration: UInt64 = 0
+    var videoTimer: Task<Void, Never>?
 
     /// `credit` enables backpressure; `nil` (tests) publishes every flush. `clock` (the
     /// server multimedia time) enables stream reports.
@@ -170,6 +145,7 @@ public actor DisplayChannel {
     public func run() async throws {
         defer {
             closed = true
+            endVideoStreams()
             events.finish()
         }
         // Each display owns its resolver. spice-server@0c2c141 keys pixmap/GLZ
@@ -208,15 +184,13 @@ public actor DisplayChannel {
                 log.error("image error in message \(message.type): \(error)")
             }
             scheduleFlush()
-            for report in pendingReports {
-                try await connection.send(DisplayClientEncoder.streamReport(report))
-            }
-            pendingReports.removeAll()
+            try await sendVideoReports()
         }
     }
 
     public func close() async {
         closed = true
+        endVideoStreams()
         await connection.close()
     }
 
@@ -354,45 +328,24 @@ public actor DisplayChannel {
         case .monitorsConfig:
             events.yield(.monitorsConfig(try MonitorsConfig(decoding: payload).heads))
         case .streamCreate:
-            let create = try StreamCreate(decoding: payload)
-            guard streams.count < Self.maxStreams || streams[create.streamID] != nil else {
-                throw WireError.limitExceeded("too many video streams")
-            }
-            var stream = VideoStream(create: create, clip: create.clip, destination: create.destination)
-            switch create.codec {
-            case .mjpeg:
-                break
-            #if canImport(VideoToolbox) && canImport(CoreMedia)
-            case .h264:
-                stream.decoder = VideoDecoder(codec: .h264)
-            case .h265:
-                stream.decoder = VideoDecoder(codec: .h265)
-            #endif
-            default:
-                warnOnce(message.type, "unsupported stream codec \(create.rawCodec)")
-            }
-            streams[create.streamID] = stream
+            try createVideoStream(StreamCreate(decoding: payload))
         case .streamData, .streamDataSized:
             try handleStreamData(StreamData(decoding: payload, sized: type == .streamDataSized))
         case .streamClip:
             let clip = try StreamClip(decoding: payload)
             streams[clip.streamID]?.clip = clip.clip
         case .streamDestroy:
-            streams.removeValue(forKey: try StreamDestroy(decoding: payload).streamID)
+            removeVideoStream(try StreamDestroy(decoding: payload).streamID)
         case .streamDestroyAll:
-            streams.removeAll()
+            endVideoStreams()
         case .reset:
             resolver.invalidateAllPixmaps()
             resolver.invalidateAllPalettes()
-            streams.removeAll()
+            endVideoStreams()
         case .mark, .mode:
             break
         case .streamActivateReport:
-            let activate = try StreamActivateReport(decoding: payload)
-            guard clock != nil, streams[activate.streamID] != nil else { break }
-            streams[activate.streamID]?.report = ReportWindow(
-                uniqueID: activate.uniqueID, maxFrames: max(1, activate.maxWindowSize),
-                timeout: .milliseconds(Int(min(activate.timeoutMS, 60_000))))
+            activateVideoReport(try StreamActivateReport(decoding: payload))
         case .qualityIndicator, .glScanoutUnix, .glDraw:
             break  // not advertised
         case .drawText:
@@ -445,6 +398,7 @@ public actor DisplayChannel {
         let hasAlpha = format == .argb32 || format == .a8 || format == .a1
         let buffer = PixelBuffer(width: Int(create.width), height: Int(create.height),
                                  fill: hasAlpha ? 0 : 0xFF00_0000, hasAlpha: hasAlpha)
+        if surfaces[create.surfaceID] != nil { removeVideoStreams(forSurface: create.surfaceID) }
         surfaces[create.surfaceID] = SurfaceState(buffer: buffer, format: format, isPrimary: create.isPrimary)
         if create.isPrimary {
             primaryID = create.surfaceID
@@ -455,6 +409,7 @@ public actor DisplayChannel {
     }
 
     private func destroySurface(_ id: UInt32) {
+        removeVideoStreams(forSurface: id)
         guard let removed = surfaces.removeValue(forKey: id) else { return }
         surfacePixels -= removed.buffer.width * removed.buffer.height
         if id == primaryID {
@@ -470,7 +425,7 @@ public actor DisplayChannel {
     }
 
     /// Applies a drawing operation to the target surface and records the dirty area.
-    private func mutate(_ base: DisplayBase, _ body: (inout PixelBuffer) throws -> Rect) rethrows {
+    func mutate(_ base: DisplayBase, _ body: (inout PixelBuffer) throws -> Rect) rethrows {
         guard var state = surfaces[base.surfaceID] else {
             log.debug("draw to unknown surface \(base.surfaceID)")
             return
@@ -481,60 +436,7 @@ public actor DisplayChannel {
         if base.surfaceID == primaryID, !changed.isEmpty { markDirty(changed) }
     }
 
-    // MARK: Video streams
-
-    private func recordFrame(streamID: UInt32, frameTime: UInt32, dropped: Bool) {
-        guard var report = streams[streamID]?.report, let now = clock?.now else { return }
-        if report.started == nil {
-            report.started = .now
-            report.startFrameTime = frameTime
-        }
-        report.frames += 1
-        if dropped { report.drops += 1 }
-        report.endFrameTime = frameTime
-        report.lastDelay = Int32(truncatingIfNeeded: Int64(frameTime) - Int64(now))
-        if report.frames >= report.maxFrames || ContinuousClock.now - (report.started ?? .now) >= report.timeout {
-            pendingReports.append(StreamReport(
-                streamID: streamID, uniqueID: report.uniqueID, startFrameMMTime: report.startFrameTime,
-                endFrameMMTime: report.endFrameTime, frames: report.frames, drops: report.drops,
-                lastFrameDelay: report.lastDelay))
-            report = ReportWindow(uniqueID: report.uniqueID, maxFrames: report.maxFrames, timeout: report.timeout)
-        }
-        streams[streamID]?.report = report
-    }
-
-    private func handleStreamData(_ data: StreamData) throws {
-        guard var stream = streams[data.streamID] else { return }
-        if let resize = data.resize { stream.destination = resize.destination }
-        streams[data.streamID] = stream
-        var decoded: PixelBuffer?
-        switch stream.create.codec {
-        case .mjpeg:
-            #if canImport(ImageIO)
-            decoded = try? JPEGDecoder.decode(data.data)
-            #endif
-            break  // keeps the case non-empty where ImageIO is unavailable
-        case .h264, .h265:
-            #if canImport(VideoToolbox) && canImport(CoreMedia)
-            do {
-                decoded = try stream.decoder?.decode(data.data)
-            } catch {
-                log.debug("video frame decode failed: \(error)")
-            }
-            #endif
-            break  // keeps the case non-empty where VideoToolbox is unavailable
-        default:
-            break
-        }
-        recordFrame(streamID: data.streamID, frameTime: data.multimediaTime, dropped: decoded == nil)
-        guard var frame = decoded else { return }
-        if !stream.create.isTopDown { frame.flipVertically() }
-        let base = DisplayBase(surfaceID: stream.create.surfaceID, box: stream.destination, clip: stream.clip)
-        mutate(base) {
-            $0.copy(from: frame, sourceArea: frame.bounds, box: stream.destination, clip: stream.clip,
-                    rop: .opPut, scaleMode: .interpolate)
-        }
-    }
+    func hasSurface(_ id: UInt32) -> Bool { surfaces[id] != nil }
 
     // MARK: Flushing
 
@@ -542,7 +444,7 @@ public actor DisplayChannel {
         dirty = (dirty ?? rect).union(rect)
     }
 
-    private func scheduleFlush() {
+    func scheduleFlush() {
         guard dirty != nil, !flushScheduled else { return }
         flushScheduled = true
         Task { self.flush() }
@@ -577,7 +479,7 @@ public actor DisplayChannel {
         primaryID.flatMap { surfaces[$0]?.buffer }
     }
 
-    private func warnOnce(_ type: UInt16, _ text: String) {
+    func warnOnce(_ type: UInt16, _ text: String) {
         if warnedTypes.insert(type).inserted { log.info("\(text) (type \(type))") }
     }
 }

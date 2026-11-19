@@ -61,7 +61,8 @@ a replacement queue.
 block: server start/end times, frame count/rate, playback/timeline epochs and an optional
 Core Audio host-time anchor for the first frame. Zero is a valid timestamp; missing
 or invalid host time remains nil. This is not proof that the playback device presented
-the samples. The implementation does not update MultimediaClock from this snapshot yet.
+the samples. Presentation calibration below converts valid snapshots into multimedia
+clock observations.
 
 Hardware-free timeline/ring regressions cover partial consumption, trimming, overwrite,
 44.1 kHz drift, wrap, discontinuities, saturation, unknown regions, hostile counts,
@@ -92,12 +93,53 @@ needed to resume audio after that failure. Normal producer close is idempotent a
 also stops playback; canceled consumers release pending continuations. The app's
 non-canceled EOF path stops output even without a separate server STOP message.
 
-## Remaining timing work
+## Presentation calibration and video deadlines
 
-Next associate source-render positions with actual presentation delay, timestamp
-freshness and audio-route/rate epochs. Main-channel MultimediaClock remains independent
-of playback, and queued milliseconds are not actual output delay. Do not feed requested
-minimum buffering or a stale source-render snapshot into it as though either measured
-presentation. Video scheduling must consume the settled clock before claiming A/V sync.
-Live same-guest drift comparisons remain pending. No installed application or PR is
-updated by these local slices.
+The source node's first-frame host time plus its downstream
+`outputPresentationLatency` estimates when that frame reaches the output. The client
+subtracts that latency once from elapsed host time; requested buffering and queued
+PCM are not added to this clock correction. Zero/invalid latency, old render blocks,
+underruns and discontinuities invalidate audio authority. Fresh observations expire
+after 250 ms; independent main-channel time remains the fallback. Epoch leases reject
+callbacks from stopped/replaced playback. Output configuration changes invalidate the
+ring immediately and rebuild the engine on its owner, with bounded retry frequency.
+
+Video decoding preserves receive order. Decoded future frames wait in bounded queues
+(32 frames per stream, 256 MiB aggregate); nearest deadlines survive capacity pressure.
+One timer handles pending deadlines and reports. Due frames present in timestamp order,
+old due frames are superseded, frames more than 100 ms late are dropped, and timestamps
+more than 2.5 seconds ahead are rejected. These are local resource policies. Missing
+clock information preserves immediate presentation. Stream destruction, surface
+replacement, reset and close retire pending frames. Reports count arrivals and late
+drops separately; unknown delay is never invented as zero. Playback delay includes the
+known queued endpoint relative to calibrated audible time, or uses the unavailable
+sentinel. Record volume is no longer advertised without an implemented capture handler.
+
+Automated coverage includes wrapping timestamps, stale observations, route invalidation,
+permission cancellation, bounded queues, sustained arrivals, control loss, stream
+replacement, nonblocking PING and report activation/timeout behavior. Live same-guest
+A/V drift comparisons, output-route changes and microphone checks remain pending;
+these tests do not establish acoustic synchronization or complete SPICE parity.
+
+Presentation references: [source render block](https://developer.apple.com/documentation/avfaudio/avaudiosourcenoderenderblock),
+[downstream latency](https://developer.apple.com/documentation/avfaudio/avaudionode/outputpresentationlatency),
+[engine configuration changes](https://developer.apple.com/documentation/avfaudio/avaudioengineconfigurationchangenotification).
+
+## Media capability contract
+
+| Advertised capability | Handler / evidence | Limit |
+| --- | --- | --- |
+| Playback volume | `AudioVolume` → `AudioController.applyVolume`; `AudioChannelTests` | Guest volume/mute changes local mixer output. |
+| Playback latency | `AudioBufferingPolicy`; `AudioBufferingTests` | Bounded minimum target, never substituted for measured output delay. |
+| Playback Opus | `OpusCodec.canDecode` gates advertisement; `OpusDecoder` | Decoder must be available; PCM remains supported. |
+| Record Opus | `AudioController.support` passes false | App sends raw PCM; optional library encoder does not imply app negotiation. |
+| Record volume | No longer advertised; `AudioChannelTests` | No capture gain/mute handler. |
+| Sized stream | `StreamData.resize` destination; display wire/decoder tests | Surface/clip bounds remain enforced. |
+| Stream report | `VideoStreamReports`; `VideoTimingTests`, `VideoSchedulingTests` | Arrivals, late drops, activation identity and timeout; unavailable audio delay uses sentinel. |
+| MJPEG / H.264 / H.265 | `DisplayChannel.videoCodecs`, `VideoDecoderTests` | ImageIO MJPEG and runtime-supported hardware decoders only; VP8/VP9 unadvertised. |
+| Multi-codec / preferred codec | Display initialization codec list | List derived from the same runtime decoder selection. |
+| Preferred compression / LZ4 | Display initialization and `ImageResolver` | Existing still-image codec/replay tests; unchanged by media scheduling. |
+| Monitor configuration | Display monitor event decoding | Negotiated wire support exists; app head presentation remains C4 work. |
+
+Other channel capabilities retain their existing handlers and security gates. This
+media change does not claim new USB, agent, migration or multi-head functionality.
