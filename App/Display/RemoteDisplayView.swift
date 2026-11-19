@@ -321,7 +321,8 @@ final class RemoteDisplayView: NSView {
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard window?.firstResponder === self, event.type == .keyDown else { return super.performKeyEquivalent(with: event) }
         if event.modifierFlags.contains(.command) {
-            if !sendsCommandToGuest || Self.reservedCommandKeys.contains(Int(event.keyCode)) {
+            if !sendsCommandToGuest || Self.reservedCommandKeys.contains(Int(event.keyCode))
+                || event.charactersIgnoringModifiers == "?" {
                 return super.performKeyEquivalent(with: event)
             }
             keyDown(with: event)

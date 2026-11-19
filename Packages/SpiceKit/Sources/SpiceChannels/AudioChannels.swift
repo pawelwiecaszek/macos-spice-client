@@ -35,6 +35,7 @@ public actor PlaybackChannel {
     public func run() async throws {
         defer { events.yield(.stop) }
         while true {
+            await connection.messageHandled()
             let message = try await connection.nextMessage()
             guard message.payload.count <= Self.maxPacket else {
                 log.error("dropping oversized audio packet (\(message.payload.count) bytes)")
@@ -117,6 +118,7 @@ public actor RecordChannel {
             events.yield(.stop)
         }
         while true {
+            await connection.messageHandled()
             let message = try await connection.nextMessage()
             do {
                 switch RecordServerMessage(rawValue: message.type) {

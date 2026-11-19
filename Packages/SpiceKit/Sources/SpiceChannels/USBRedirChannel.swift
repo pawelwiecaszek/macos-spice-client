@@ -92,6 +92,7 @@ public actor USBRedirChannel {
     private func receiveLoop() async throws {
         try await sendRaw(codec.encodeHello())
         while true {
+            await connection.messageHandled()
             let message = try await connection.nextMessage()
             let bytes: [UInt8]
             switch SpiceVMCMessage(rawValue: message.type) {

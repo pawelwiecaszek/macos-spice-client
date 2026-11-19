@@ -67,6 +67,7 @@ public actor SmartcardChannel {
 
     private func receiveLoop() async throws {
         while true {
+            await connection.messageHandled()
             let message = try await connection.nextMessage()
             guard VSCMessage.isData(message) else { continue }
             let vsc: VSCMessage

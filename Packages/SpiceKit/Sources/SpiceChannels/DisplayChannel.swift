@@ -140,6 +140,7 @@ public actor DisplayChannel {
     private var dirty: Rect?
     private var flushScheduled = false
     private var resolver = ImageResolver(pixmapCacheBudget: DisplayChannel.pixmapCacheBudget)
+    var cachedPixmapCount: Int { resolver.pixmaps.count }
     private var streams: [UInt32: VideoStream] = [:]
     private var warnedTypes: Set<UInt16> = []
 
@@ -171,9 +172,11 @@ public actor DisplayChannel {
             closed = true
             events.finish()
         }
+        // Each display owns its resolver. spice-server@0c2c141 keys pixmap/GLZ
+        // objects by (RedClient,id); distinct UInt8 channel IDs isolate them, including 0.
         try await connection.send(DisplayClientEncoder.initialize(
-            pixmapCacheID: 1, pixmapCacheSize: Int64(Self.pixmapCacheBudget),
-            glzDictionaryID: 1, glzWindowSize: Self.glzWindowSize
+            pixmapCacheID: connection.id, pixmapCacheSize: Int64(Self.pixmapCacheBudget),
+            glzDictionaryID: connection.id, glzWindowSize: Self.glzWindowSize
         ))
         if connection.serverCaps.contains(DisplayCapability.prefCompression.rawValue) {
             // GLZ (global dictionary) compresses best over WAN; QUIC is used for photos.
@@ -184,7 +187,13 @@ public actor DisplayChannel {
             try await connection.send(DisplayClientEncoder.preferredVideoCodecs(Self.videoCodecs))
         }
         while true {
+            await connection.messageHandled()
             let message = try await connection.nextMessage()
+            // spice-common@58d375e spice.proto:531–535 and spice-gtk@f04479c
+            // channel-display.c:1247–1254: wait BEFORE invalidating the pixmap cache.
+            if message.type == DisplayServerMessage.invalAllPixmaps.rawValue {
+                try await connection.waitForChannels(WaitForChannels(decoding: message.payload))
+            }
             do {
                 try handle(message)
             } catch WireError.limitExceeded(let what) {
@@ -254,6 +263,61 @@ public actor DisplayChannel {
                 $0.copy(from: source, sourceArea: draw.sourceArea, box: draw.base.box, clip: draw.base.clip,
                         rop: draw.rop, scaleMode: draw.scaleMode, mask: mask)
             }
+        case .drawRop3:
+            let draw = try DrawRop3(decoding: payload)
+            guard let image = draw.source else { throw WireError.invalidValue("ROP3 source image") }
+            let source = try resolve(image)
+            let brush: FillSource
+            switch draw.brush {
+            case .solid(let color): brush = .color(color)
+            case .pattern(let image, let position):
+                guard let image else { throw WireError.invalidValue("ROP3 pattern image") }
+                brush = .pattern(try resolve(image), origin: position)
+            case .none: throw WireError.invalidValue("ROP3 brush")
+            }
+            let mask: DrawMask?
+            if draw.mask.bitmap != nil {
+                guard let decoded = resolver.mask(for: draw.mask) else {
+                    throw ImageResolveError.unsupported("ROP3 mask bitmap")
+                }
+                mask = decoded
+            } else { mask = nil }
+            guard let format = surfaces[draw.base.surfaceID]?.format,
+                  [.xRGB32, .argb32, .x555, .r565].contains(format) else {
+                throw ImageResolveError.unsupported("ROP3 surface format")
+            }
+            guard surfaces[draw.base.surfaceID]?.buffer.rop3WorkIsBounded(box: draw.base.box, clip: draw.base.clip) == true else {
+                throw WireError.limitExceeded("ROP3 clip work budget")
+            }
+            mutate(draw.base) {
+                $0.rop3(from: source, sourceArea: draw.sourceArea, brush: brush, box: draw.base.box,
+                        clip: draw.base.clip, rop: draw.rop, scaleMode: draw.scaleMode, mask: mask, format: format)
+            }
+        case .drawStroke:
+            let draw = try DrawStroke(decoding: payload)
+            let brush: FillSource
+            switch draw.brush {
+            case .none: brush = .color(0)
+            case .solid(let color): brush = .color(color)
+            case .pattern(let image, let position):
+                guard let image else { throw WireError.invalidValue("stroke pattern") }
+                brush = .pattern(try resolve(image), origin: position)
+            }
+            guard let format = surfaces[draw.base.surfaceID]?.format else {
+                throw ImageResolveError.unsupported("stroke surface format")
+            }
+            do {
+                try mutate(draw.base) {
+                    if draw.attributes.isStyled {
+                        return try $0.strokeStyled(path: draw.path, attributes: draw.attributes, brush: brush,
+                                                   box: draw.base.box, clip: draw.base.clip, mode: draw.foreMode, format: format)
+                    }
+                    return try $0.strokeSolid(path: draw.path, brush: brush, box: draw.base.box,
+                                             clip: draw.base.clip, mode: draw.foreMode, format: format)
+                }
+            } catch StrokeError.workLimit { throw WireError.limitExceeded("stroke work budget") }
+            catch StrokeError.invalidPath { throw WireError.invalidValue("stroke path") }
+            catch { throw ImageResolveError.unsupported("stroke raster mode or path") }
         case .drawBlackness, .drawWhiteness, .drawInvers:
             let draw = try DrawMaskOnly(decoding: payload)
             let rop: Ropd = type == .drawBlackness ? .opBlackness : type == .drawWhiteness ? .opWhiteness : .opInvers
@@ -331,7 +395,31 @@ public actor DisplayChannel {
                 timeout: .milliseconds(Int(min(activate.timeoutMS, 60_000))))
         case .qualityIndicator, .glScanoutUnix, .glDraw:
             break  // not advertised
-        case .drawRop3, .drawStroke, .drawText, .drawComposite:
+        case .drawText:
+            let draw = try DrawText(decoding: payload)
+            func textBrush(_ brush: Brush) throws -> FillSource? {
+                switch brush {
+                case .none: return nil
+                case .solid(let color): return .color(color)
+                case .pattern(let image, let origin):
+                    guard let image else { throw WireError.invalidValue("text pattern") }
+                    return .pattern(try resolve(image), origin: origin)
+                }
+            }
+            let foreground = try textBrush(draw.foregroundBrush), background = try textBrush(draw.backgroundBrush)
+            guard let format = surfaces[draw.base.surfaceID]?.format else {
+                throw ImageResolveError.unsupported("text surface format")
+            }
+            do {
+                try mutate(draw.base) {
+                    try $0.text(draw.string, foreground: foreground, background: background,
+                                  backgroundArea: draw.backgroundArea, box: draw.base.box,
+                                  clip: draw.base.clip, mode: draw.foreMode, format: format)
+                }
+            } catch TextRasterError.workLimit { throw WireError.limitExceeded("text work budget") }
+            catch TextRasterError.invalidGlyphs { throw WireError.invalidValue("text glyphs") }
+            catch { throw ImageResolveError.unsupported("text glyph format or mode") }
+        case .drawComposite:
             warnOnce(message.type, "unsupported draw command")
         }
     }
@@ -382,14 +470,14 @@ public actor DisplayChannel {
     }
 
     /// Applies a drawing operation to the target surface and records the dirty area.
-    private func mutate(_ base: DisplayBase, _ body: (inout PixelBuffer) -> Rect) {
+    private func mutate(_ base: DisplayBase, _ body: (inout PixelBuffer) throws -> Rect) rethrows {
         guard var state = surfaces[base.surfaceID] else {
             log.debug("draw to unknown surface \(base.surfaceID)")
             return
         }
         surfaces[base.surfaceID] = nil  // keep the buffer uniquely referenced while mutating
-        let changed = body(&state.buffer)
-        surfaces[base.surfaceID] = state
+        defer { surfaces[base.surfaceID] = state }
+        let changed = try body(&state.buffer)
         if base.surfaceID == primaryID, !changed.isEmpty { markDirty(changed) }
     }
 

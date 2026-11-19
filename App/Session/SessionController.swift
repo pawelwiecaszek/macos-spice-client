@@ -36,6 +36,7 @@ final class SessionController: RemoteDisplayViewDelegate {
 
     let id = UUID()
     let profile: ConnectionProfile
+    let origin: SessionOrigin
     private(set) var phase: Phase = .connecting
     private(set) var title: String
     private(set) var clientMouseMode = true
@@ -63,20 +64,31 @@ final class SessionController: RemoteDisplayViewDelegate {
     @ObservationIgnored private let settings: AppSettings
     @ObservationIgnored private let log = Logger(subsystem: "com.pawelwiecaszek.spiceclient", category: "session")
     @ObservationIgnored weak var window: NSWindow?
-    @ObservationIgnored private let policy = ReconnectPolicy()
+    @ObservationIgnored let recovery: SessionRecoveryEnvironment
+    private var policy: ReconnectPolicy { recovery.policy }
     /// The original profile had no ticket, so it can simply be used again.
     @ObservationIgnored private let reusableProfile: Bool
     @ObservationIgnored private var connectedAt: Date?
     @ObservationIgnored private var reconnectTask: Task<Void, Never>?
     @ObservationIgnored private var restoreTask: Task<Void, Never>?
+    @ObservationIgnored private var isStopped = false
+    @ObservationIgnored let ravadaReconnect: @MainActor (RavadaSessionOrigin) async throws -> RavadaReconnectTicket
 
-    init(profile: ConnectionProfile, settings: AppSettings = .shared, reconnect: ReconnectContext? = nil) {
+    init(profile: ConnectionProfile, settings: AppSettings = .shared, reconnect: ReconnectContext? = nil,
+         origin: SessionOrigin? = nil, recovery: SessionRecoveryEnvironment = .live,
+         ravadaReconnect: @escaping @MainActor (RavadaSessionOrigin) async throws -> RavadaReconnectTicket = {
+             try await MainWindowController.shared.reconnectProfile(for: $0)
+         }) {
         self.profile = profile
+        self.recovery = recovery
+        self.ravadaReconnect = ravadaReconnect
+        let resolvedOrigin = origin ?? .inferred(from: profile)
+        self.origin = resolvedOrigin
         self.settings = settings
         self.reconnect = reconnect
         reusableProfile = profile.password == nil
         self.title = profile.displayTitle
-        self.vmRef = ProxmoxVMRef(profile: profile)
+        self.vmRef = resolvedOrigin.proxmoxReference
         let session = SpiceSession(profile: profile)
         self.session = session
         self.usb = USBController(session: session, profile: profile)
@@ -126,6 +138,9 @@ final class SessionController: RemoteDisplayViewDelegate {
         })
     }
 
+    /// Preserve the same preference snapshot when this session reconnects.
+    var sessionSettings: AppSettings { settings }
+
     // MARK: Proxmox power control
 
     /// A server with an API token is configured for this session's VM.
@@ -171,6 +186,7 @@ final class SessionController: RemoteDisplayViewDelegate {
     }
 
     func stop() {
+        isStopped = true
         reconnectTask?.cancel()
         restoreTask?.cancel()
         displayView?.stop()
@@ -192,8 +208,19 @@ final class SessionController: RemoteDisplayViewDelegate {
     /// Proxmox hands out fresh tickets through the API, and ticket-less servers take the
     /// same settings again. One-time tickets from a downloaded `.vv` are wiped after use.
     var canReconnect: Bool {
+        if case .ravada(let identity) = origin { return identity.hasMachineIdentity }
         if vmRef != nil, canControlPower { return true }
         return reusableProfile
+    }
+
+    /// Automatic recovery also requires the user’s session preference.
+    var canReconnectAutomatically: Bool {
+        return canReconnect
+    }
+
+    func openRavadaPortal() {
+        guard case .ravada(let identity) = origin else { return }
+        MainWindowController.shared.showPortal(profileID: identity.profileID)
     }
 
     /// The last failure, kept for the ended screen when reconnecting is cancelled.
@@ -212,9 +239,15 @@ final class SessionController: RemoteDisplayViewDelegate {
         let wasConnected = connectedAt != nil
         let stable = connectedAt.map { Date.now.timeIntervalSince($0) >= Double(policy.stableAfter.components.seconds) } ?? false
         // A reconnection that didn't stay up continues the count; anything else starts over.
+        let recovering = reconnect != nil && !stable
+        let permitted: Bool
+        if case .ravada = origin {
+            permitted = RavadaRecoveryPolicy.shouldReconnect(after: failure, wasConnected: wasConnected,
+                                                             recovering: reconnect?.automatic == true && !stable)
+        } else { permitted = policy.shouldReconnect(after: failure, wasConnected: wasConnected, reconnecting: recovering) }
         let attempt = if let reconnect, !stable { reconnect.attempt + 1 } else { 1 }
-        if settings.reconnectAutomatically, canReconnect,
-           policy.shouldReconnect(after: failure, wasConnected: wasConnected, reconnecting: reconnect != nil && !stable),
+        if settings.reconnectAutomatically, canReconnectAutomatically,
+           permitted,
            policy.delay(beforeAttempt: attempt) != nil {
             if wasConnected { announce(String(localized: "Connection to \(title) lost. Reconnecting.")) }
             scheduleReconnect(attempt: attempt, carry: currentCarryOver())
@@ -239,29 +272,40 @@ final class SessionController: RemoteDisplayViewDelegate {
         guard let delay = policy.delay(beforeAttempt: attempt) else { return }
         reconnectTask?.cancel()
         reconnectTask = Task { [weak self] in
-            var progress = ReconnectProgress(attempt: attempt, maxAttempts: self?.policy.delays.count ?? 0)
-            if !NetworkMonitor.shared.isOnline {
-                progress.waitingForNetwork = true
-                self?.phase = .reconnecting(progress)
-                await NetworkMonitor.shared.waitUntilOnline()
-                progress.waitingForNetwork = false
-            }
+            var progress = ReconnectProgress(attempt: attempt, maxAttempts: self?.maxReconnectAttempts ?? 0)
+            await self?.waitForRecoveryNetwork(attempt: attempt)
             guard !Task.isCancelled else { return }
             progress.retryAt = Date.now.addingTimeInterval(Double(delay.components.seconds))
             self?.phase = .reconnecting(progress)
-            try? await Task.sleep(for: delay)
+            try? await self?.recovery.sleep(delay)
             guard !Task.isCancelled else { return }
-            await self?.attemptReconnect(attempt: attempt, carry: carry)
+            await self?.waitForRecoveryNetwork(attempt: attempt)
+            guard !Task.isCancelled else { return }
+            await self?.attemptReconnect(attempt: attempt, carry: carry, automatic: true)
+        }
+    }
+
+    private func waitForRecoveryNetwork(attempt: Int) async {
+        while !recovery.isOnline(), !Task.isCancelled {
+            phase = .reconnecting(ReconnectProgress(attempt: attempt, maxAttempts: maxReconnectAttempts,
+                                                   waitingForNetwork: true))
+            await recovery.waitUntilOnline()
         }
     }
 
     /// Reconnects right away: the Reconnect button, "Try Now", and after starting the VM.
     func reconnectNow() {
+        guard !isStopped, canReconnect, phase != .connected else { return }
+        if case .reconnecting(let progress) = phase, progress.retryAt == nil, !progress.waitingForNetwork { return }
+        let automatic: Bool
+        if case .reconnecting = phase { automatic = true } else { automatic = false }
         let attempt = if case .reconnecting(let progress) = phase { progress.attempt } else { 1 }
+        phase = .reconnecting(ReconnectProgress(attempt: attempt, maxAttempts: maxReconnectAttempts))
         let carry = currentCarryOver()
         reconnectTask?.cancel()
         reconnectTask = Task { [weak self] in
-            await self?.attemptReconnect(attempt: attempt, carry: carry)
+            if automatic { await self?.waitForRecoveryNetwork(attempt: attempt) }
+            await self?.attemptReconnect(attempt: attempt, carry: carry, automatic: automatic)
         }
     }
 
@@ -281,11 +325,22 @@ final class SessionController: RemoteDisplayViewDelegate {
         phase = .ended(lastFailureMessage ?? reconnect?.lastFailure)
     }
 
-    private func attemptReconnect(attempt: Int, carry: SessionCarryOver) async {
-        phase = .reconnecting(ReconnectProgress(attempt: attempt, maxAttempts: policy.delays.count))
+    private func attemptReconnect(attempt: Int, carry: SessionCarryOver, automatic: Bool = false) async {
+        guard !Task.isCancelled, !isStopped else { return }
+        if automatic, !settings.reconnectAutomatically { phase = .ended(lastFailureMessage); return }
+        phase = .reconnecting(ReconnectProgress(attempt: attempt, maxAttempts: maxReconnectAttempts))
         let next: ConnectionProfile
         do {
-            if let vmRef, canControlPower {
+            if case .ravada(let identity) = origin {
+                let ticket = try await ravadaReconnect(identity)
+                // No await may separate this check from the same-window handoff.
+                try ticket.validate()
+                next = ticket.profile
+                // A broker metadata change must not silently weaken an encrypted session.
+                guard RavadaConnectionFile.preservesEncryption(from: profile, to: next) else {
+                    throw RavadaBrokerError.portalRequired
+                }
+            } else if let vmRef, canControlPower {
                 next = try await ProxmoxStore.shared.reconnectProfile(for: vmRef)
             } else if reusableProfile {
                 next = profile
@@ -303,16 +358,18 @@ final class SessionController: RemoteDisplayViewDelegate {
             // The Proxmox API didn't answer either: count it as a failed attempt.
             let message = (error as? any LocalizedError)?.errorDescription ?? error.localizedDescription
             lastFailureMessage = message
-            if settings.reconnectAutomatically, policy.delay(beforeAttempt: attempt + 1) != nil {
+            let retry = if case .ravada = origin { automatic && RavadaRecoveryPolicy.mayRetry(error) } else { true }
+            if settings.reconnectAutomatically, canReconnectAutomatically, retry, policy.delay(beforeAttempt: attempt + 1) != nil {
                 scheduleReconnect(attempt: attempt + 1, carry: carry)
             } else {
-                endKind = .networkLost
+                if case .ravada = origin { endKind = .failed } else { endKind = .networkLost }
                 phase = .ended(message)
             }
             return
         }
-        guard !Task.isCancelled else { return }
-        let context = ReconnectContext(attempt: attempt, carryOver: carry,
+        guard !Task.isCancelled, !isStopped else { return }
+        if automatic, !settings.reconnectAutomatically { phase = .ended(lastFailureMessage); return }
+        let context = ReconnectContext(attempt: attempt, automatic: automatic, carryOver: carry,
                                        lastFailure: lastFailureMessage ?? reconnect?.lastFailure)
         SessionWindowManager.shared.replace(self, with: next, context: context)
     }
@@ -357,7 +414,7 @@ final class SessionController: RemoteDisplayViewDelegate {
 
     // MARK: Session streams
 
-    private func handle(_ event: SessionEvent) {
+    func handle(_ event: SessionEvent) {
         switch event {
         case .state(.connecting):
             phase = .connecting
@@ -524,22 +581,4 @@ final class SessionController: RemoteDisplayViewDelegate {
         }
         window.setContentSize(content)
     }
-}
-
-/// Carried from a dropped session to the one that replaces it in the same window.
-struct ReconnectContext {
-    var attempt: Int
-    var carryOver: SessionCarryOver
-    /// Why the original session dropped (shown if reconnecting is cancelled).
-    var lastFailure: String?
-}
-
-/// What the user had shared with the guest when the connection dropped.
-struct SessionCarryOver: Equatable {
-    var usbDevices: [UInt64] = []
-    var isos: [URL] = []
-    var smartcardReader: String?
-    var microphone = false
-
-    var isEmpty: Bool { usbDevices.isEmpty && isos.isEmpty && smartcardReader == nil && !microphone }
 }
