@@ -56,7 +56,7 @@ let package = Package(
         .testTarget(name: "SpiceCodecsTests", dependencies: ["SpiceCodecs", "SpiceWire"]),
         .testTarget(name: "SpiceTransportTests", dependencies: ["SpiceTransport", "SpiceWire"]),
         .testTarget(name: "SpiceKitTests", dependencies: ["SpiceKit"]),
-        .testTarget(name: "ProxmoxTests", dependencies: ["Proxmox", "VVFile"]),
+        .testTarget(name: "ProxmoxTests", dependencies: ["Proxmox", "VVFile", "SpiceTransport"]),
         .testTarget(name: "AudioHostTests", dependencies: ["AudioHost"]),
         .testTarget(
             name: "SpiceChannelsTests",

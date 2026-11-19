@@ -156,15 +156,26 @@ public final class ProxmoxClient: Sendable {
             }
         }
         guard let object = data as? [String: Any] else { throw .invalidResponse }
+        return Self.connectionFileText(from: object)
+    }
+
+    /// Turns the JSON object returned by `POST …/spiceproxy` into `.vv` text.
+    static func connectionFileText(from object: [String: Any]) -> String {
         var lines = ["[virt-viewer]"]
         for (key, value) in object.sorted(by: { $0.key < $1.key })
         where !key.isEmpty && key.unicodeScalars.allSatisfy({ ("a"..."z").contains($0) || ("0"..."9").contains($0) || $0 == "-" }) {
-            let text: String
+            var text: String
             switch value {
             case let string as String: text = string
             case let number as NSNumber: text = number.stringValue
             default: continue
             }
+            // Proxmox already escapes the CA for the .vv file before returning it
+            // (pve-access-control, PVE::AccessControl::remote_viewer_config:
+            // `$cacert =~ s/\n/\\n/g;`), so the API value holds literal "\n" sequences.
+            // Undo that first, or the escaping below doubles the backslashes and the parser
+            // yields a single-line PEM that can't be read. PEM never contains a backslash.
+            if key == "ca" { text = text.replacingOccurrences(of: "\\n", with: "\n") }
             // GKeyFile escaping so the result goes through the normal, validating parser.
             let escaped = text.replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "\n", with: "\\n").replacingOccurrences(of: "\r", with: "\\r")

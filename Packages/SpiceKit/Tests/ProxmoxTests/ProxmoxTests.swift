@@ -1,6 +1,7 @@
 import Testing
 @testable import Proxmox
 import VVFile
+import SpiceTransport
 
 @Suite("Proxmox")
 struct ProxmoxTests {
@@ -14,6 +15,35 @@ struct ProxmoxTests {
         """)
         let ref = try #require(ProxmoxVMRef(profile: file.profile))
         #expect(ref == ProxmoxVMRef(apiHost: "pve1.example.com", node: "pve-node1", vmid: 101))
+    }
+
+    /// Proxmox returns `ca` from `…/spiceproxy` with newlines already escaped as `\n`
+    /// (PVE::AccessControl::remote_viewer_config); the converted file must still yield a
+    /// multi-line PEM, not one with literal backslash-n sequences.
+    @Test func spiceproxyCAIsNotDoubleEscaped() throws {
+        let pem = """
+        -----BEGIN CERTIFICATE-----
+        MIIBeDCCAR+gAwIBAgIUDp+YVJVvh1Fw0ZEbH/G9VA3cgK8wCgYIKoZIzj0EAwIw
+        EjEQMA4GA1UEAwwHVGVzdCBDQTAeFw0yNjExMTkwOTExNTFaFw0zNjExMTYwOTEx
+        NTFaMBIxEDAOBgNVBAMMB1Rlc3QgQ0EwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNC
+        AASSXnKHJDUk8i1cHPBs0mGPHQGpYOkJ6/tmi0INa2CrNKZAR461rUVlvB/xFmGr
+        cAFISfNr3YW0gd8DNwI49sxdo1MwUTAdBgNVHQ4EFgQUr9+/zRAE/+h3PRIM/CCb
+        46kIVT0wHwYDVR0jBBgwFoAUr9+/zRAE/+h3PRIM/CCb46kIVT0wDwYDVR0TAQH/
+        BAUwAwEB/zAKBggqhkjOPQQDAgNHADBEAiAYIXQ2pZFhJ6l0qphfL3unOUA0TfOA
+        TTRonKWSuzc2WQIgKQ8DpYaylXg7AG7BqS3BoKvvXQFM2yVRqTcTFmdLQw0=
+        -----END CERTIFICATE-----
+
+        """
+        let apiValue = pem.replacingOccurrences(of: "\n", with: "\\n")  // as Proxmox sends it
+        let text = ProxmoxClient.connectionFileText(from: [
+            "type": "spice", "host": "pvespiceproxy:abc:101:pve-node1::def",
+            "proxy": "http://pve1.example.com:3128", "tls-port": 61000, "ca": apiValue,
+        ])
+        let file = try VVFileParser.parse(text)
+        #expect(file.profile.caPEM == pem)
+        let certificates = PEM.certificates(in: try #require(file.profile.caPEM))
+        #expect(certificates.count == 1)
+        #expect(X509.subject(ofCertificate: try #require(certificates.first)) != nil)
     }
 
     @Test func plainQemuFileHasNoVM() throws {
