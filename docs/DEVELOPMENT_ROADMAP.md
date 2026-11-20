@@ -146,11 +146,11 @@ bounded decoding and rendering; see
 with live captures recorded as pending. C3 implements bounded server-directed
 playback buffering, packet-to-rendered-frame timing, control-safe delivery,
 presentation calibration, route invalidation/rebuild, multimedia-clock feedback and
-bounded video deadline scheduling/reporting. Automated regressions pass; live
-same-guest A/V drift, output-route and microphone acceptance remain pending.
+bounded video deadline scheduling/reporting. Automated regressions pass; user-reported functional playback, output-route,
+microphone and reconnect acceptance passed. Instrumented A/V drift remains unmeasured.
 See [media timing and evidence](AUDIO_TIMING.md). C4 monitor work and Phase 6 broker
 actions remain separate scopes.
 
 C4 first slice implements bounded per-head shared-texture presentation, monitor-local
 input and layout/window lifecycle handling. Full-set positioned/sparse guest resize now has capability, topology/lifecycle
-authorization and bounded delivery coverage. Live multi-head acceptance remains pending. See [monitor contracts](MONITOR_LAYOUTS.md).
+authorization and bounded delivery coverage. User-reported single- and two-virtual-monitor functional acceptance passed on build `0098d64`; broader platform/driver coverage remains pending. See [monitor contracts](MONITOR_LAYOUTS.md).

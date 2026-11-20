@@ -375,7 +375,7 @@ Goal: pick an `.iso` on the Mac and have it appear in the guest as a CD/DVD driv
    - **M4a – ISO mount (§7b)** and **M4b – USB redirection (§7a)**: usbredir codec + channel, emulated CD-ROM, IOKit host backend, toolbar menus. (Prioritised by the maintainer ahead of M5.)
    - **M4c – Smartcard passthrough (§7c)** and **M6a – Clipboard**: prioritised by the maintainer ahead of M5.
 6. **M5 – Performance:** GLZ (+ZLIB-GLZ), LZ4 images, JPEG, H.264/H.265 via VideoToolbox, stream reports, renderer backpressure. *(Done. GLZ/LZ4 were written from a prose format spec and verified against real spice-server captures in `Tests/Fixtures/display`. VP8/VP9 deliberately not supported: spice-server VP9 is profile 1 (4:4:4), rejected by VideoToolbox; VP8 has no macOS decoder; adding libvpx was declined by the maintainer.)*
-7. **M6 – Agent:** clipboard, dynamic resolution (monitors config), multi-monitor groundwork. *(Done: one window per display channel (≤ 4), display id on pointer events, multi-monitor layout via VD_AGENT_MONITORS_CONFIG, file transfer to the guest (FILE_XFER_START/STATUS/DATA, 32 KiB chunks paced by the agent outbox, names sanitised to a bare file name). C4: per-head shared-texture views and capability-gated complete-set resizing now have local regression coverage; live multi-head acceptance remains pending.)*
+7. **M6 – Agent:** clipboard, dynamic resolution (monitors config), multi-monitor groundwork. *(Done: one window per display channel (≤ 4), display id on pointer events, multi-monitor layout via VD_AGENT_MONITORS_CONFIG, file transfer to the guest (FILE_XFER_START/STATUS/DATA, 32 KiB chunks paced by the agent outbox, names sanitised to a bare file name). C4: per-head shared-texture views and capability-gated complete-set resizing now have local regression coverage; user-reported single/two-monitor functional acceptance passed on the tested deployment; broader platform coverage remains pending.)*
 8. **M7 – Audio:** playback, then record. *(Done: playback/record channels, raw PCM + Opus playback via AudioToolbox (variable frames per packet), jitter buffer ≤ 250 ms, microphone off by default per session and sent only while the guest records (raw PCM; Opus input needs a server built with Opus). Entitlement `device.audio-input` + `NSMicrophoneUsageDescription`.)*
 9. **M8 – Polish:** settings, error UX, reconnect, accessibility labels. (Signing and notarization are out of scope: the maintainer builds and runs the app locally.)
 
@@ -402,6 +402,7 @@ Test environments: Proxmox VE VM with QXL or virtio-gpu + `spice-vdagent`; plain
 - docs/CLIENT_CAPABILITIES.md records the 2026-11-11 audit. Dropped drawing commands,
   WAIT_FOR_CHANNELS/cache ordering and A/V timing have automated coverage; the user accepted
   C3 functional playback, output-route, microphone and reconnect checks. C4 shared-surface
-  heads and complete-set resizing have automated coverage; live multi-head acceptance,
+  heads and complete-set resizing have automated coverage and user-reported single/two-monitor
+  functional acceptance on the tested deployment; broader multi-head platform coverage,
   migration and CPU-copy video delivery remain explicit gaps.
   Update this matrix with implementation and measured/live evidence as fixes land.

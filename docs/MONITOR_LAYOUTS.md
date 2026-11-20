@@ -70,8 +70,13 @@ configuration-before-surface, unplug, surface destruction, close/reoffer and sto
 Full-set regressions cover disabled/sparse slots, position capability gates, reflow,
 closed heads, simultaneous edits, initial-layout readiness, wire-to-UI callback lag,
 agent/channel replacement, token starvation and bounded request coalescing.
-Live two-head Linux/shared-surface and Windows/separate-channel validation remains
-pending. One physical Mac monitor can host several guest-head windows; the guest
+The user accepted single- and two-virtual-monitor behavior on the tested deployment
+using build `0098d64`: both head windows displayed correctly, input worked, and resizing
+one preserved the other. Single-monitor checks also passed resizing, corner pointer
+alignment, keyboard input, fullscreen/windowed transitions and close/reconnect. This
+report does not identify the negotiated channel arrangement or establish separate
+Linux/shared-surface and Windows/separate-channel coverage; broader guest/driver and
+physical hot-unplug validation remains pending. One physical Mac monitor can host several guest-head windows; the guest
 must still expose the corresponding virtual monitors. No VM configuration is changed
 by this implementation.
 
