@@ -17,7 +17,7 @@ public enum ChannelError: Error, Equatable, Sendable {
 public actor ChannelConnection {
     public nonisolated let type: ChannelType
     public nonisolated let id: UInt8
-    public let serverCaps: CapabilitySet
+    public nonisolated let serverCaps: CapabilitySet
     private let stream: any SpiceByteStream
     private let log: ChannelLogger
     private let synchronization: ChannelSynchronization

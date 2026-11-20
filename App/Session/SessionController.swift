@@ -60,6 +60,7 @@ final class SessionController: RemoteDisplayViewDelegate {
     @ObservationIgnored private let session: SpiceSession
     @ObservationIgnored private var tasks: [Task<Void, Never>] = []
     @ObservationIgnored private var resizeTask: Task<Void, Never>?
+    @ObservationIgnored private var agentResizeEpoch: UInt64 = 0
     @ObservationIgnored private(set) var displays: SessionDisplays?
     @ObservationIgnored private let settings: AppSettings
     @ObservationIgnored private let log = Logger(subsystem: "com.pawelwiecaszek.spiceclient", category: "session")
@@ -432,7 +433,19 @@ final class SessionController: RemoteDisplayViewDelegate {
         case .mouseMode(let mode):
             clientMouseMode = mode.contains(.client)
             displays?.setMouseMode(clientMouseMode)
+        case .displayChannels(let channels):
+            resizeTask?.cancel()
+            displays?.expectChannels(channels)
+        case .monitorResizeAuthorization(let authorization):
+            resizeTask?.cancel()
+            displays?.setMainAuthorization(authorization)
+        case .displayMonitorConfiguration(let channel, let supported):
+            resizeTask?.cancel()
+            displays?.setMonitorConfigurationSupport(channel: channel, supported: supported)
         case .agentConnected(let connected):
+            resizeTask?.cancel()
+            agentResizeEpoch &+= 1
+            displays?.agentLifecycleObserved()
             agentConnected = connected
             if connected { scheduleGuestResize() }
         case .usbSlots(let count):
@@ -449,7 +462,7 @@ final class SessionController: RemoteDisplayViewDelegate {
     func handle(_ event: DisplayEvent) {
         defer { if case .update = event { session.displayCredit.consumed() } }
         displays?.handle(event, channel: 0)
-        if displays?.allowsLegacyResize != true { resizeTask?.cancel() }
+        if case .update = event { } else { resizeTask?.cancel() }
         if case .primarySurfaceCreated = event { scheduleGuestResize() }
     }
 
@@ -461,7 +474,7 @@ final class SessionController: RemoteDisplayViewDelegate {
             }
         }
         displays?.handle(event.event, channel: id)
-        if displays?.allowsLegacyResize != true { resizeTask?.cancel() }
+        if case .update = event.event { } else { resizeTask?.cancel() }
         if case .primarySurfaceCreated = event.event { scheduleGuestResize() }
     }
 
@@ -502,7 +515,7 @@ final class SessionController: RemoteDisplayViewDelegate {
     }
 
     func displayView(_ view: RemoteDisplayView, didResizeTo pixelSize: CGSize) {
-        scheduleGuestResize()
+        scheduleGuestResize(view: view)
     }
 
     func displayView(_ view: RemoteDisplayView, didDropFiles urls: [URL]) {
@@ -513,21 +526,26 @@ final class SessionController: RemoteDisplayViewDelegate {
     // MARK: Window / guest size
 
     /// Debounced (~300 ms) request for the guest to match the window size (needs vdagent).
-    private func scheduleGuestResize() {
-        guard settings.resizeGuestWithWindow, agentConnected, displays?.allowsLegacyResize == true else { return }
+    private func scheduleGuestResize(view resizedView: RemoteDisplayView? = nil) {
+        guard settings.resizeGuestWithWindow, agentConnected, phase == .connected,
+              let view = resizedView ?? displayView, let displays else { return }
         resizeTask?.cancel()
+        displays.retirePendingResize()
         let session = self.session
+        let revision = displays.resizeRevision
+        let agentEpoch = agentResizeEpoch
         let retina = settings.useRetinaResolution
-        // Even widths are friendlier to guest drivers.
-        func guestSize(_ view: RemoteDisplayView) -> (width: Int, height: Int) {
+        resizeTask = Task { [weak self, weak view] in
+            do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
+            guard !Task.isCancelled, let self, let view, self.phase == .connected,
+                  self.agentConnected, self.agentResizeEpoch == agentEpoch,
+                  self.displays?.resizeRevision == revision else { return }
             let scale = retina ? (view.window?.backingScaleFactor ?? 2) : 1
-            return (Int(view.bounds.width * scale) & ~1, Int(view.bounds.height * scale))
-        }
-        let sizes = (displays?.legacyViews ?? [:]).mapValues { guestSize($0) }
-        resizeTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(300))
-            guard !Task.isCancelled, self?.displays?.allowsLegacyResize == true else { return }
-            await session.requestGuestMonitors(sizes)
+            let width = view.bounds.width * scale, height = view.bounds.height * scale
+            guard width.isFinite, height.isFinite, (2...16_384).contains(width), (1...16_384).contains(height),
+                  let layout = self.displays?.prepareResize(of: view, width: Int(width), height: Int(height)),
+                  let authorizations = self.displays?.resizeAuthorizations else { return }
+            _ = await session.requestGuestMonitorLayout(layout, authorizations: authorizations)
         }
     }
 

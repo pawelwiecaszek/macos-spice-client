@@ -77,6 +77,13 @@ public enum SessionEvent: Sendable, Equatable {
     case state(SessionState)
     case mouseMode(MouseModes)
     case agentConnected(Bool)
+    /// All server-advertised display channels, including unsupported IDs. Clients
+    /// must not replace a whole monitor set while some channels remain unknown.
+    case displayChannels([UInt8])
+    /// Whether a linked peer promises explicit monitor metadata; a created
+    /// surface alone is not proof of a legacy single-head configuration.
+    case displayMonitorConfiguration(channel: UInt8, supported: Bool)
+    case monitorResizeAuthorization(MonitorResizeAuthorization)
     case guestName(String)
     /// Number of USB redirection slots the VM offers (0 = none / disabled by the `.vv`).
     case usbSlots(Int)
@@ -128,6 +135,7 @@ public actor SpiceSession {
     private var audio = AudioSupport()
     private nonisolated let clipboardSink: AsyncStream<ClipboardMessage>.Continuation
     private var guestAgentCaps = CapabilitySet()
+    private nonisolated let monitorResizeAuthorities = (0..<SpiceSession.maxDisplays).map { _ in MonitorResizeAuthority() }
     private nonisolated let inputSink: AsyncStream<InputEvent>.Continuation
     private let inputQueue: AsyncStream<InputEvent>
 
@@ -282,16 +290,26 @@ public actor SpiceSession {
     /// Asks the guest agent for one monitor per display id, laid out left to right.
     /// Ids must be contiguous from 0; a missing id ends the list.
     public func requestGuestMonitors(_ sizes: [UInt8: (width: Int, height: Int)]) async {
-        guard let main else { return }
-        var monitors: [(width: UInt32, height: UInt32, x: Int32, y: Int32)] = []
-        var x: Int32 = 0
+        var monitors: [GuestMonitor] = []
+        var x: Int64 = 0
         for id in 0..<UInt8(Self.maxDisplays) {
             guard let size = sizes[id], size.width > 0, size.height > 0 else { break }
-            monitors.append((UInt32(size.width), UInt32(size.height), x, 0))
-            x += Int32(size.width)
+            guard size.width <= 16_384, size.height <= 16_384, let position = Int32(exactly: x) else { return }
+            monitors.append(GuestMonitor(id: id, width: UInt32(size.width), height: UInt32(size.height), x: position, y: 0))
+            x += Int64(size.width)
         }
-        guard !monitors.isEmpty else { return }
-        try? await main.sendToAgent(.monitorsConfig(monitors))
+        guard let layout = GuestMonitorLayout(monitors) else { return }
+        _ = await requestGuestMonitorLayout(layout)
+    }
+
+    /// Submits a complete desired layout. Acceptance means queued for the current
+    /// agent, not that the guest applied it. Sparse/position capabilities are
+    /// checked on the main-channel owner immediately before queue admission.
+    @discardableResult
+    public func requestGuestMonitorLayout(_ layout: GuestMonitorLayout,
+                                         authorizations: [MonitorResizeAuthorization] = []) async -> Bool {
+        guard state == .connected, let main else { return false }
+        return (try? await main.requestMonitorLayout(layout, authorizations: authorizations)) ?? false
     }
 
     // MARK: USB redirection (AGENTS.md §7a/§7b)
@@ -547,6 +565,8 @@ public actor SpiceSession {
 
     private func handle(_ event: MainEvent) async {
         switch event {
+        case .monitorResizeAuthorization(let authorization):
+            eventSink.yield(.monitorResizeAuthorization(authorization))
         case .initialized(let id, _, let current, let agent):
             sessionID = id
             eventSink.yield(.mouseMode(current))
@@ -587,6 +607,7 @@ public actor SpiceSession {
         // connections it can make us open (one per singleton channel, 16 USB slots).
         var seen = Set<ChannelsList.Entry>()
         let unique = list.filter { seen.insert($0).inserted }
+        eventSink.yield(.displayChannels(unique.filter { $0.type == .display }.map(\.id).sorted()))
         var usbCount = 0
         let wanted = unique.filter { entry in
             switch entry.type {
@@ -697,14 +718,20 @@ public actor SpiceSession {
                 }
             }
         case .display where id == 0:
-            let channel = DisplayChannel(connection: connection, events: displaySink, credit: displayCredit, clock: clock)
+            let supportsMonitors = connection.serverCaps.contains(DisplayCapability.monitorsConfig.rawValue)
+            eventSink.yield(.displayMonitorConfiguration(channel: id, supported: supportsMonitors))
+            let channel = DisplayChannel(connection: connection, events: displaySink, credit: displayCredit, clock: clock,
+                                         monitorResizeAuthority: monitorResizeAuthorities[Int(id)])
             display = channel
             spawn("display", critical: true, connection: connection) { try await channel.run() }
         case .display:
+            let supportsMonitors = connection.serverCaps.contains(DisplayCapability.monitorsConfig.rawValue)
+            eventSink.yield(.displayMonitorConfiguration(channel: id, supported: supportsMonitors))
             // Additional monitor: its own stream, forwarded tagged with the display id.
             let (stream, sink) = AsyncStream<DisplayEvent>.makeStream(bufferingPolicy: .unbounded)
             let channel = DisplayChannel(connection: connection, events: sink,
-                                         credit: secondaryDisplayCredits[Int(id) - 1], clock: clock)
+                                         credit: secondaryDisplayCredits[Int(id) - 1], clock: clock,
+                                         monitorResizeAuthority: monitorResizeAuthorities[Int(id)])
             secondaryDisplays[id] = channel
             let forward = secondaryDisplaySink
             tasks.append(Task {
@@ -779,6 +806,7 @@ public actor SpiceSession {
         clock.reset()
         // Wake barriers before sequential channel close awaits; old sessions cannot
         // publish progress into a replacement session's independent opener/coordinator.
+        for authority in monitorResizeAuthorities { authority.invalidate() }
         await opener.synchronization.shutdown()
         failFileTransfers(.cancelled)
         for task in tasks { task.cancel() }

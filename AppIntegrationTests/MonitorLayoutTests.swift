@@ -65,7 +65,6 @@ struct MonitorLayoutTests {
         #expect(primary.renderer.sourceRect == CGRect(x: 0, y: 0, width: 4, height: 4))
         #expect(secondary.view.renderer.sourceRect == CGRect(x: 4, y: 0, width: 4, height: 4))
         #expect(primary.displayID == 0 && secondary.view.displayID == 1)
-        #expect(!displays.allowsLegacyResize)
 
         // A nonzero surface update is uploaded into the shared owner texture.
         controller.handle(.update(SurfaceUpdate(surfaceID: 7, rect: Rect(x: 5, y: 1, width: 1, height: 1),
@@ -101,7 +100,6 @@ struct MonitorLayoutTests {
         #expect(displays.windows.isEmpty && !secondary.window.isVisible)
         #expect(controller.displayView === primary && primary.displayID == 0)
         #expect(primary.renderer.presentationSize == CGSize(width: 4, height: 4))
-        #expect(displays.allowsLegacyResize)
     }
 
     @Test func configurationBeforeSurfaceCreationIsRetainedAndDisabledConfigurationBlanksViews() throws {
@@ -144,7 +142,7 @@ struct MonitorLayoutTests {
         controller.handle(.primarySurfaceCreated(surfaceID: 0, width: 8, height: 4))
         controller.handle(.monitorsConfig([head(0), head(1, surface: 9, x: 4)]))
         #expect(displays.windows.isEmpty && primary.renderer.sourceRect == nil)
-        #expect(!primary.acceptsGuestInput && !displays.allowsLegacyResize)
+        #expect(!primary.acceptsGuestInput)
         #expect(controller.displayNotice != nil)
         #expect(primary.renderer.presentationSize == CGSize(width: 8, height: 4))
         displays.handle(.monitorsConfig([head(0, x: 1920)]), channel: 1)
@@ -157,9 +155,7 @@ struct MonitorLayoutTests {
         // The primary invalid layout already blocks resize; restore its legacy
         // single-head mapping before checking the closed secondary case.
         controller.handle(.monitorsConfig([head(0, width: 8)]))
-        #expect(displays.allowsLegacyResize)
         secondary.window.close()
-        #expect(!displays.allowsLegacyResize)
         displays.handle(.primarySurfaceDestroyed(surfaceID: 0), channel: 1)
         #expect(displays.windows.isEmpty && primary.renderer.surfaceTexture != nil)
     }
@@ -191,7 +187,7 @@ struct MonitorLayoutTests {
         let separate = try #require(displays.windows[.init(channel: 1, head: 0)])
         #expect(!shared.view.acceptsGuestInput && !separate.view.acceptsGuestInput)
         #expect(controller.displayView?.acceptsGuestInput == true)
-        #expect(controller.displayNotice != nil && !displays.allowsLegacyResize)
+        #expect(controller.displayNotice != nil)
         displays.handle(.primarySurfaceDestroyed(surfaceID: 0), channel: 1)
         #expect(shared.view.acceptsGuestInput && controller.displayNotice == nil)
     }

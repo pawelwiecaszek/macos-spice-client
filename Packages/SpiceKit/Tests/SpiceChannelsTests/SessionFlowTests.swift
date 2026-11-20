@@ -137,10 +137,14 @@ struct SessionFlowTests {
         let first = await iterator.next()
         #expect(first == .initialized(sessionID: 77, mouseModes: [.server, .client], currentMode: .server, agentConnected: false))
         let second = await iterator.next()
-        if case .channels(let channels) = second {
+        if case .monitorResizeAuthorization(let authorization) = second {
+            #expect(authorization.isCurrent)
+        } else { Issue.record("Expected topology authorization before the channel list") }
+        let third = await iterator.next()
+        if case .channels(let channels) = third {
             #expect(channels.compactMap(\.type) == [.display, .inputs, .cursor])
         } else {
-            Issue.record("expected channel list, got \(String(describing: second))")
+            Issue.record("expected channel list, got \(String(describing: third))")
         }
         runTask.cancel()
         await main.close()

@@ -41,6 +41,8 @@ public struct SurfaceUpdate: Sendable {
 
 /// Events for the renderer.
 public enum DisplayEvent: Sendable {
+    /// Immediately precedes the topology metadata it authorizes.
+    case topologyAuthorization(MonitorResizeAuthorization)
     /// The primary surface was (re)created; clear the presentation texture to this size.
     case primarySurfaceCreated(surfaceID: UInt32, width: Int, height: Int)
     case primarySurfaceDestroyed(surfaceID: UInt32)
@@ -123,6 +125,7 @@ public actor DisplayChannel {
 
     private let credit: DisplayUpdateCredit?
     let clock: MultimediaClock?
+    private let monitorResizeAuthority: MonitorResizeAuthority?
     var pendingReports: [QueuedVideoReport] = []
     var pendingVideoPixels = 0
     var videoGeneration: UInt64 = 0
@@ -134,11 +137,13 @@ public actor DisplayChannel {
     /// `credit` enables backpressure; `nil` (tests) publishes every flush. `clock` (the
     /// server multimedia time) enables stream reports.
     public init(connection: ChannelConnection, events: AsyncStream<DisplayEvent>.Continuation,
-                credit: DisplayUpdateCredit? = nil, clock: MultimediaClock? = nil) {
+                credit: DisplayUpdateCredit? = nil, clock: MultimediaClock? = nil,
+                monitorResizeAuthority: MonitorResizeAuthority? = nil) {
         self.connection = connection
         self.events = events
         self.credit = credit
         self.clock = clock
+        self.monitorResizeAuthority = monitorResizeAuthority
     }
 
     /// Sends `DISPLAY_INIT` and preferences, then processes messages until closed.
@@ -146,6 +151,11 @@ public actor DisplayChannel {
         defer {
             closed = true
             endVideoStreams()
+            if let primaryID {
+                emitTopologyAuthorization()
+                events.yield(.primarySurfaceDestroyed(surfaceID: primaryID))
+            }
+            monitorResizeAuthority?.invalidate()
             events.finish()
         }
         // Each display owns its resolver. spice-server@0c2c141 keys pixmap/GLZ
@@ -189,6 +199,7 @@ public actor DisplayChannel {
     }
 
     public func close() async {
+        monitorResizeAuthority?.invalidate()
         closed = true
         endVideoStreams()
         await connection.close()
@@ -326,6 +337,7 @@ public actor DisplayChannel {
         case .invalAllPalettes:
             resolver.invalidateAllPalettes()
         case .monitorsConfig:
+            emitTopologyAuthorization()
             events.yield(.monitorsConfig(try MonitorsConfig(decoding: payload).heads))
         case .streamCreate:
             try createVideoStream(StreamCreate(decoding: payload))
@@ -396,6 +408,7 @@ public actor DisplayChannel {
         surfacePixels += requested - replaced
         let format = create.format
         let hasAlpha = format == .argb32 || format == .a8 || format == .a1
+        if create.isPrimary { emitTopologyAuthorization() }
         let buffer = PixelBuffer(width: Int(create.width), height: Int(create.height),
                                  fill: hasAlpha ? 0 : 0xFF00_0000, hasAlpha: hasAlpha)
         if surfaces[create.surfaceID] != nil { removeVideoStreams(forSurface: create.surfaceID) }
@@ -413,10 +426,15 @@ public actor DisplayChannel {
         guard let removed = surfaces.removeValue(forKey: id) else { return }
         surfacePixels -= removed.buffer.width * removed.buffer.height
         if id == primaryID {
+            emitTopologyAuthorization()
             primaryID = nil
             dirty = nil
             events.yield(.primarySurfaceDestroyed(surfaceID: id))
         }
+    }
+
+    private func emitTopologyAuthorization() {
+        if let authority = monitorResizeAuthority { events.yield(.topologyAuthorization(authority.advance())) }
     }
 
     private func resolve(_ image: Image) throws -> PixelBuffer {

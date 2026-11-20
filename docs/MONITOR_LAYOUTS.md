@@ -1,6 +1,6 @@
 # C4: monitor presentation
 
-## First implementation slice
+## Presentation
 
 Display-channel, surface and monitor identities remain separate. Channel zero can
 present up to four heads of its primary surface in independent windows. Additional
@@ -36,16 +36,40 @@ the existing four-channel bound. No texture is allocated from head dimensions;
 existing surface allocation limits remain authoritative. Unknown flags are retained.
 `max_allowed` is independent metadata, not assumed equal to count.
 
-Multi-head/sparse layouts currently scale locally when windows resize. The old
-single-monitor guest-resize request is canceled and suppressed for these layouts:
-agent monitor configuration replaces the whole desired monitor set, so reusing it
-could disable another head. Full positioned/sparse resize negotiation is the next
-C4 slice. Arbitrary multi-head nonzero channels and generalized monitor-to-device
-mapping remain unsupported. Closing a head window does not disable its guest monitor.
+Complete-set guest resize is now implemented for known, validated layouts. Each
+request retains all enabled and disabled heads, including closed-window heads. A
+changed head keeps its anchor; heads at/beyond its old right/bottom edges move by the
+size delta, retaining their sizes and gaps. Overlap, signed overflow and combined
+surface dimension/pixel-budget violations refuse the request. Between server
+metadata updates, the most recent desired set is retained while consecutive window edits merge.
+New topology retires that intent. Closing a head does not disable its guest monitor.
+
+Peer monitor-configuration support is required; positions and sparse IDs require
+the corresponding agent capabilities. Sparse requests preserve array slot identity
+with zero-sized disabled entries. Typed sets contain at most 16 explicit entries and
+encode at most 256 slots. No implicit clone/provisioning or monitor-enable action is
+introduced. Unknown/unsupported channels, missing initial monitor metadata, mirrored
+or overlapping layouts, and nonzero-channel multihead mappings scale locally.
+Separate-channel peers with no monitor-config support keep the legacy left-to-right
+arrangement; explicit global positions are preserved when provided. Separate-channel
+peers reporting overlapping local origins cannot yet be resized automatically.
+
+Per-display topology authorization is invalidated in the wire reader before metadata
+is delivered to the app. Complete-set requests require current observations from every
+expected channel, a main-channel lifecycle/channel-set observation, and a UI-intent
+observation. Token-starved requests coalesce to one pending set and recheck all
+observations before transmission begins. Topology change, agent replacement, a newer
+resize, stop and close retire stale queued work even before UI callbacks are consumed.
+An agent message already started must finish its framing; its effects cannot be
+revoked by later metadata. A newly advertised channel set after initial channel
+opening suppresses resize until reconnect rather than guessing unlinked displays.
 
 Automated tests cover wire bounds, crop geometry, texture sharing and pixel uploads,
 local input/Retina/letterbox mapping, disabled/unsupported layouts, mixed-ID admission,
 configuration-before-surface, unplug, surface destruction, close/reoffer and stop.
+Full-set regressions cover disabled/sparse slots, position capability gates, reflow,
+closed heads, simultaneous edits, initial-layout readiness, wire-to-UI callback lag,
+agent/channel replacement, token starvation and bounded request coalescing.
 Live two-head Linux/shared-surface and Windows/separate-channel validation remains
 pending. One physical Mac monitor can host several guest-head windows; the guest
 must still expose the corresponding virtual monitors. No VM configuration is changed

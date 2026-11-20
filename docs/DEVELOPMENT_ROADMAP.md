@@ -152,5 +152,5 @@ See [media timing and evidence](AUDIO_TIMING.md). C4 monitor work and Phase 6 br
 actions remain separate scopes.
 
 C4 first slice implements bounded per-head shared-texture presentation, monitor-local
-input and layout/window lifecycle handling. Full-set positioned/sparse guest resize
-and live multi-head acceptance remain pending. See [monitor contracts](MONITOR_LAYOUTS.md).
+input and layout/window lifecycle handling. Full-set positioned/sparse guest resize now has capability, topology/lifecycle
+authorization and bounded delivery coverage. Live multi-head acceptance remains pending. See [monitor contracts](MONITOR_LAYOUTS.md).

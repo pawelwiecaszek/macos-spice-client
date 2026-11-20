@@ -3,6 +3,7 @@ import SpiceWire
 
 /// Events from the main channel.
 public enum MainEvent: Sendable, Equatable {
+    case monitorResizeAuthorization(MonitorResizeAuthorization)
     case initialized(sessionID: UInt32, mouseModes: MouseModes, currentMode: MouseModes, agentConnected: Bool)
     case channels([ChannelsList.Entry])
     case mouseMode(current: MouseModes, supported: MouseModes)
@@ -38,6 +39,15 @@ public actor MainChannel {
     private var supportedModes: MouseModes = []
     private var currentMode: MouseModes = []
     private var agentConnected = false
+    private var peerAgentCaps = CapabilitySet()
+    private struct PendingMonitorLayout {
+        let layout: GuestMonitorLayout
+        let authorizations: [MonitorResizeAuthorization]
+        var isCurrent: Bool { authorizations.allSatisfy(\.isCurrent) }
+    }
+    private var pendingMonitorLayout: PendingMonitorLayout?
+    private var flushingAgentOutbox = false
+    private let monitorResizeAuthority = MonitorResizeAuthority()
     /// Messages we may still send to the agent.
     private var agentSendTokens: UInt32 = 0
     private var agentOutbox: [[UInt8]] = []
@@ -64,7 +74,13 @@ public actor MainChannel {
 
     /// Processes messages until the channel closes (throws on error or disconnect).
     public func run() async throws {
-        defer { events.finish() }
+        defer {
+            monitorResizeAuthority.invalidate()
+            pendingMonitorLayout = nil
+            peerAgentCaps = CapabilitySet()
+            agentConnected = false
+            events.finish()
+        }
         while true {
             await connection.messageHandled()
             let message = try await connection.nextMessage()
@@ -73,7 +89,23 @@ public actor MainChannel {
     }
 
     public func close() async {
+        monitorResizeAuthority.invalidate()
+        pendingMonitorLayout = nil
+        peerAgentCaps = CapabilitySet()
+        agentConnected = false
         await connection.close()
+    }
+
+    /// Accepts one complete desired monitor set, gated by the current agent's
+    /// capabilities. Token-starved requests coalesce before encoding begins.
+    @discardableResult
+    public func requestMonitorLayout(_ layout: GuestMonitorLayout,
+                                     authorizations: [MonitorResizeAuthorization] = []) async throws -> Bool {
+        guard authorizations.count <= 6, authorizations.allSatisfy(\.isCurrent),
+              agentConnected, layout.message(capabilities: peerAgentCaps) != nil else { return false }
+        pendingMonitorLayout = PendingMonitorLayout(layout: layout, authorizations: authorizations)
+        try await flushAgentOutbox()
+        return true
     }
 
     /// Requests client (absolute) or server (relative) mouse mode.
@@ -100,7 +132,19 @@ public actor MainChannel {
     }
 
     private func flushAgentOutbox() async throws {
-        while agentSendTokens > 0, !agentOutbox.isEmpty {
+        guard !flushingAgentOutbox else { return }
+        flushingAgentOutbox = true
+        defer { flushingAgentOutbox = false }
+        while agentConnected, agentSendTokens > 0 {
+            if agentOutbox.isEmpty, let request = pendingMonitorLayout {
+                pendingMonitorLayout = nil
+                if request.isCurrent, let message = request.layout.message(capabilities: peerAgentCaps) {
+                    let chunks = message.encodeChunks()
+                    agentOutbox = chunks
+                    agentOutboxBytes = chunks.reduce(0) { $0 + $1.count }
+                }
+            }
+            guard !agentOutbox.isEmpty else { break }
             let chunk = agentOutbox.removeFirst()
             agentOutboxBytes -= chunk.count
             agentSendTokens -= 1
@@ -130,6 +174,7 @@ public actor MainChannel {
                 try await connection.send(MainClientEncoder.mouseModeRequest(.client))
             }
         case .channelsList:
+            events.yield(.monitorResizeAuthorization(monitorResizeAuthority.advance()))
             events.yield(.channels(try ChannelsList(decoding: message.payload).channels))
         case .mouseMode:
             let mode = try MainMouseMode(decoding: message.payload)
@@ -147,7 +192,10 @@ public actor MainChannel {
             agentSendTokens = try MainUInt32(decoding: message.payload).value
             try await agentDidConnect()
         case .agentDisconnected:
+            events.yield(.monitorResizeAuthorization(monitorResizeAuthority.advance()))
             agentConnected = false
+            peerAgentCaps = CapabilitySet()
+            pendingMonitorLayout = nil
             consumedAgentMessages = 0
             agentOutbox.removeAll()
             agentOutboxBytes = 0
@@ -192,6 +240,7 @@ public actor MainChannel {
         let wasConnected = agentConnected
         agentConnected = true
         if !wasConnected {
+            events.yield(.monitorResizeAuthorization(monitorResizeAuthority.advance()))
             try await connection.send(MainClientEncoder.agentStart(tokens: Self.agentReceiveTokens))
             events.yield(.agentConnected(true))
             try await sendToAgent(.announceCapabilities(request: true, capabilities: Self.agentCapabilities))
@@ -205,7 +254,11 @@ public actor MainChannel {
             let request = (try? reader.readU32()) ?? 0
             var words: [UInt32] = []
             while words.count < 16, let word = try? reader.readU32() { words.append(word) }
-            events.yield(.agentCapabilities(CapabilitySet(words: words)))
+            peerAgentCaps = CapabilitySet(words: words)
+            if let request = pendingMonitorLayout, request.layout.message(capabilities: peerAgentCaps) == nil {
+                pendingMonitorLayout = nil
+            }
+            events.yield(.agentCapabilities(peerAgentCaps))
             // Our capabilities never change, so one queued reply answers any number of requests.
             if request != 0, !capabilityReplyQueued {
                 capabilityReplyQueued = true
