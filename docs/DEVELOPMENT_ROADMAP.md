@@ -154,3 +154,7 @@ actions remain separate scopes.
 C4 first slice implements bounded per-head shared-texture presentation, monitor-local
 input and layout/window lifecycle handling. Full-set positioned/sparse guest resize now has capability, topology/lifecycle
 authorization and bounded delivery coverage. User-reported single- and two-virtual-monitor functional acceptance passed on build `0098d64`; broader platform/driver coverage remains pending. See [monitor contracts](MONITOR_LAYOUTS.md).
+
+C5 begins with [file-transfer lifetime](FILE_TRANSFER_LIFECYCLE.md): cancellable
+status waits, bounded independently owned delivery, fresh agent/policy checks and
+generation-bound app progress. Clipboard and hardware-specific acceptance remain separate.

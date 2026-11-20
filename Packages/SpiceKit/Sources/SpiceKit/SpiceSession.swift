@@ -134,7 +134,7 @@ public actor SpiceSession {
     private var record: RecordChannel?
     private var audio = AudioSupport()
     private nonisolated let clipboardSink: AsyncStream<ClipboardMessage>.Continuation
-    private var guestAgentCaps = CapabilitySet()
+    var guestAgentCaps = CapabilitySet()
     private nonisolated let monitorResizeAuthorities = (0..<SpiceSession.maxDisplays).map { _ in MonitorResizeAuthority() }
     private nonisolated let inputSink: AsyncStream<InputEvent>.Continuation
     private let inputQueue: AsyncStream<InputEvent>
@@ -145,8 +145,9 @@ public actor SpiceSession {
     private let ticket: SecretTicket?
     private let log = ChannelLogger(category: "session")
 
-    private var state: SessionState = .idle
-    private var main: MainChannel?
+    var state: SessionState = .idle
+    let fileTransfers: SessionFileTransferState
+    var main: MainChannel?
     private var display: DisplayChannel?
     private var inputs: InputsChannel?
     private var cursor: CursorChannel?
@@ -161,7 +162,9 @@ public actor SpiceSession {
     private var sessionID: UInt32?
     private var channelsRequested = false
 
-    public init(profile: ConnectionProfile, connector: any StreamConnector, encryptor: any TicketEncryptor) {
+    public init(profile: ConnectionProfile, connector: any StreamConnector, encryptor: any TicketEncryptor,
+                fileTransferStatusTimeout: Duration = .seconds(30)) {
+        self.fileTransfers = SessionFileTransferState(timeout: fileTransferStatusTimeout)
         (events, eventSink) = AsyncStream.makeStream(bufferingPolicy: .unbounded)
         (displayEvents, displaySink) = AsyncStream.makeStream(bufferingPolicy: .unbounded)
         (secondaryDisplayEvents, secondaryDisplaySink) = AsyncStream.makeStream(bufferingPolicy: .unbounded)
@@ -443,98 +446,6 @@ public actor SpiceSession {
         }
     }
 
-    // MARK: File transfer (drag & drop to the guest)
-
-    public enum FileTransferError: Error, Equatable, Sendable, LocalizedError {
-        case agentUnavailable
-        case disabledByGuest
-        case rejected(FileTransferResult)
-        case notAFile
-        case unreadable
-
-        public var errorDescription: String? {
-            switch self {
-            case .agentUnavailable: "The SPICE guest agent (spice-vdagent) isn’t running in the virtual machine."
-            case .disabledByGuest: "File transfer is disabled in the virtual machine."
-            case .rejected(.notEnoughSpace): "There isn’t enough free space in the virtual machine."
-            case .rejected(.sessionLocked): "The virtual machine’s session is locked."
-            case .rejected(.cancelled): "The transfer was cancelled."
-            case .rejected: "The virtual machine couldn’t save the file."
-            case .notAFile: "Only files can be sent, not folders."
-            case .unreadable: "The file couldn’t be read."
-            }
-        }
-    }
-
-    private var nextFileTransferID: UInt32 = 1
-    private var fileTransferWaiters: [UInt32: CheckedContinuation<FileTransferResult, Never>] = [:]
-    /// Statuses that arrived before anyone waited for them (actor reentrancy).
-    private var earlyFileTransferStatus: [UInt32: FileTransferResult] = [:]
-
-    /// Copies a file into the guest (it lands in the agent's download folder). `progress`
-    /// receives bytes sent so far. Cancelling the task cancels the transfer.
-    public func sendFile(_ url: URL, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws {
-        guard let main, await main.isAgentConnected else { throw FileTransferError.agentUnavailable }
-        guard !guestAgentCaps.contains(AgentCapability.fileXferDisabled.rawValue) else { throw FileTransferError.disabledByGuest }
-        let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-        guard values?.isRegularFile == true else { throw FileTransferError.notAFile }
-        let size = Int64(values?.fileSize ?? 0)
-        guard let handle = try? FileHandle(forReadingFrom: url) else { throw FileTransferError.unreadable }
-        defer { try? handle.close() }
-
-        let id = nextFileTransferID
-        nextFileTransferID &+= 1
-        try await main.sendToAgent(FileTransferCodec.start(id: id, name: url.lastPathComponent, size: UInt64(size)))
-        let first = await waitForFileStatus(id)
-        guard first == .canSendData else { throw FileTransferError.rejected(first) }
-
-        var sent: Int64 = 0
-        do {
-            while sent < size {
-                try Task.checkCancellation()
-                // Pace by the agent's flow control: keep at most ~1 MiB queued.
-                while await main.pendingAgentBytes > 1024 * 1024 {
-                    try await Task.sleep(for: .milliseconds(10))
-                }
-                guard let chunk = try handle.read(upToCount: FileTransferCodec.chunkSize), !chunk.isEmpty else {
-                    throw FileTransferError.unreadable
-                }
-                try await main.sendToAgent(FileTransferCodec.data(id: id, bytes: Array(chunk)[...]))
-                sent += Int64(chunk.count)
-                progress(sent, size)
-            }
-        } catch {
-            try? await main.sendToAgent(FileTransferCodec.status(id: id, result: .cancelled))
-            fileTransferWaiters.removeValue(forKey: id)?.resume(returning: .cancelled)
-            throw error
-        }
-        let result = await waitForFileStatus(id)
-        guard result == .success else { throw FileTransferError.rejected(result) }
-    }
-
-    private func waitForFileStatus(_ id: UInt32) async -> FileTransferResult {
-        if let early = earlyFileTransferStatus.removeValue(forKey: id) { return early }
-        return await withCheckedContinuation { continuation in
-            fileTransferWaiters[id] = continuation
-        }
-    }
-
-    private func fileTransferStatus(id: UInt32, result: FileTransferResult) {
-        if let waiter = fileTransferWaiters.removeValue(forKey: id) {
-            waiter.resume(returning: result)
-        } else if id < nextFileTransferID, earlyFileTransferStatus.count < 64 {
-            earlyFileTransferStatus[id] = result
-        }
-    }
-
-    /// Ends every waiting transfer (agent gone, session over).
-    private func failFileTransfers(_ result: FileTransferResult) {
-        let waiters = fileTransferWaiters
-        fileTransferWaiters.removeAll()
-        earlyFileTransferStatus.removeAll()
-        for waiter in waiters.values { waiter.resume(returning: result) }
-    }
-
     private func handleClipboard(_ message: AgentMessage) {
         let decoded: ClipboardMessage?
         do {
@@ -583,6 +494,7 @@ public actor SpiceSession {
             eventSink.yield(.agentConnected(connected))
         case .agentCapabilities(let caps):
             guestAgentCaps = caps
+            if caps.contains(AgentCapability.fileXferDisabled.rawValue) { failFileTransfers(.disabled) }
             eventSink.yield(.clipboardAvailable(clipboardSupported))
         case .agentMessage(let message):
             if let status = FileTransferCodec.decodeStatus(message) {

@@ -406,3 +406,19 @@ Test environments: Proxmox VE VM with QXL or virtio-gpu + `spice-vdagent`; plain
   functional acceptance on the tested deployment; broader multi-head platform coverage,
   migration and CPU-copy video delivery remain explicit gaps.
   Update this matrix with implementation and measured/live evidence as fixes land.
+
+## C5 file-transfer lifetime
+
+- App file-transfer workers and progress callbacks are generation/per-file bound.
+  Queued security scopes release on Cancel; only the active sender releases its own
+  acquired scope. Local queue: 256 waiting files plus one active.
+- Initial/final guest statuses are cancellable and bounded (30 s default, SDK clamp
+  1 ms–120 s), with at most 16 active IDs and two early statuses per ID. Ignore
+  completed/unknown IDs and duplicate ready/terminal results; never retry START
+  automatically after cancellation/timeout.
+- File START/DATA/CANCEL bind to the Main wire-owned agent epoch and fresh transfer
+  policy. Queue cancellation on the independent bounded Main sender; never perform
+  cleanup socket writes on a cancelled caller task. Keep started-message framing
+  intact. File queue: 64 ordinary messages, 80 with reserved cleanup, within the
+  existing shared byte budget. Include queued file bytes in flow-control pacing.
+- Regression evidence and remaining live checks: docs/FILE_TRANSFER_LIFECYCLE.md.

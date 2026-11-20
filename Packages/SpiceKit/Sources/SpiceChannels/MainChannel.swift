@@ -1,3 +1,4 @@
+import Foundation
 import SpiceAgent
 import SpiceWire
 
@@ -48,12 +49,17 @@ public actor MainChannel {
     private var pendingMonitorLayout: PendingMonitorLayout?
     private var flushingAgentOutbox = false
     private let monitorResizeAuthority = MonitorResizeAuthority()
+    private var agentFileEpoch = UUID()
+    private var fileMessages: [QueuedAgentFileMessage] = []
+    private var fileMessageBytes = 0
+    private var activeFileEpoch: UUID?
+    private var fileFlushTask: Task<Void, Never>?
     /// Messages we may still send to the agent.
     private var agentSendTokens: UInt32 = 0
     private var agentOutbox: [[UInt8]] = []
     private var agentOutboxBytes = 0
     /// Bytes queued for the agent but not yet sent (used to pace bulk transfers).
-    public var pendingAgentBytes: Int { agentOutboxBytes }
+    public var pendingAgentBytes: Int { agentOutboxBytes + fileMessageBytes }
     public var isAgentConnected: Bool { agentConnected }
     /// A capability reply is waiting for tokens: further requests are coalesced into it.
     private var capabilityReplyQueued = false
@@ -75,6 +81,8 @@ public actor MainChannel {
     /// Processes messages until the channel closes (throws on error or disconnect).
     public func run() async throws {
         defer {
+            retireAgentFiles()
+            fileFlushTask?.cancel()
             monitorResizeAuthority.invalidate()
             pendingMonitorLayout = nil
             peerAgentCaps = CapabilitySet()
@@ -89,6 +97,8 @@ public actor MainChannel {
     }
 
     public func close() async {
+        retireAgentFiles()
+        fileFlushTask?.cancel()
         monitorResizeAuthority.invalidate()
         pendingMonitorLayout = nil
         peerAgentCaps = CapabilitySet()
@@ -108,6 +118,61 @@ public actor MainChannel {
         return true
     }
 
+    public var fileTransferAuthorization: AgentFileTransferAuthorization? {
+        agentConnected ? AgentFileTransferAuthorization(epoch: agentFileEpoch) : nil
+    }
+
+    /// Performs no socket I/O on the caller's task. One owned sender prevents
+    /// cancellation of a file task from cancelling the shared connection.
+    public func enqueueFileTransfer(_ message: AgentMessage, authorization: AgentFileTransferAuthorization) throws {
+        try queueFileMessage(message, authorization: authorization, cleanup: false)
+    }
+
+    public func cancelFileTransfer(id: UInt32, authorization: AgentFileTransferAuthorization) throws {
+        guard agentConnected, authorization.epoch == agentFileEpoch else { throw AgentFileTransferAdmissionError.unavailable }
+        fileMessages.removeAll { item in
+            if item.id == id { fileMessageBytes -= item.byteCount; return true }
+            return false
+        }
+        try queueFileMessage(FileTransferCodec.status(id: id, result: .cancelled), authorization: authorization, cleanup: true)
+    }
+
+    private func queueFileMessage(_ message: AgentMessage, authorization: AgentFileTransferAuthorization, cleanup: Bool) throws {
+        guard agentConnected, authorization.epoch == agentFileEpoch else { throw AgentFileTransferAdmissionError.unavailable }
+        guard cleanup || !peerAgentCaps.contains(AgentCapability.fileXferDisabled.rawValue) else {
+            throw AgentFileTransferAdmissionError.disabledByGuest
+        }
+        guard [.fileXferStart, .fileXferData, .fileXferStatus].contains(message.knownType),
+              message.data.count >= 4, message.data.count <= 64 * 1024 else { throw AgentFileTransferAdmissionError.invalidMessage }
+        var reader = ByteReader(message.data)
+        let id = try reader.readU32()
+        let entry = QueuedAgentFileMessage(id: id, epoch: authorization.epoch, chunks: message.encodeChunks(), cleanup: cleanup)
+        let limit = Self.maxAgentOutboxBytes - (cleanup ? 0 : 64 * 1024)
+        guard fileMessages.count < (cleanup ? 80 : 64), pendingAgentBytes + entry.byteCount <= limit else {
+            throw AgentFileTransferAdmissionError.queueFull
+        }
+        fileMessages.append(entry)
+        fileMessageBytes += entry.byteCount
+        guard fileFlushTask == nil else { return }
+        fileFlushTask = Task { [weak self] in
+            guard let self else { return }
+            await self.flushFileMessages()
+        }
+    }
+
+    private func flushFileMessages() async {
+        defer { fileFlushTask = nil }
+        do { try await flushAgentOutbox() }
+        catch { await connection.close() }
+    }
+
+    private func retireAgentFiles() {
+        agentFileEpoch = UUID()
+        fileMessages.removeAll()
+        fileMessageBytes = 0
+        activeFileEpoch = nil
+    }
+
     /// Requests client (absolute) or server (relative) mouse mode.
     public func requestMouseMode(_ mode: MouseModes) async throws {
         guard supportedModes.contains(mode), mode != currentMode else { return }
@@ -122,7 +187,7 @@ public actor MainChannel {
         guard agentConnected else { return }
         let chunks = message.encodeChunks()
         let size = chunks.reduce(0) { $0 + $1.count }
-        guard agentOutboxBytes + size <= Self.maxAgentOutboxBytes else {
+        guard pendingAgentBytes + size <= Self.maxAgentOutboxBytes else {
             log.info("agent outbox full; dropping a type \(message.type) message")
             return
         }
@@ -144,7 +209,24 @@ public actor MainChannel {
                     agentOutboxBytes = chunks.reduce(0) { $0 + $1.count }
                 }
             }
+            if agentOutbox.isEmpty {
+                activeFileEpoch = nil
+                while let first = fileMessages.first {
+                    fileMessages.removeFirst()
+                    fileMessageBytes -= first.byteCount
+                    guard first.epoch == agentFileEpoch else { continue }
+                    guard first.cleanup || !peerAgentCaps.contains(AgentCapability.fileXferDisabled.rawValue) else { continue }
+                    agentOutbox = first.chunks
+                    agentOutboxBytes = first.byteCount
+                    activeFileEpoch = first.epoch
+                    break
+                }
+            }
             guard !agentOutbox.isEmpty else { break }
+            if let activeFileEpoch, activeFileEpoch != agentFileEpoch {
+                agentOutbox.removeAll(); agentOutboxBytes = 0
+                continue
+            }
             let chunk = agentOutbox.removeFirst()
             agentOutboxBytes -= chunk.count
             agentSendTokens -= 1
@@ -192,6 +274,7 @@ public actor MainChannel {
             agentSendTokens = try MainUInt32(decoding: message.payload).value
             try await agentDidConnect()
         case .agentDisconnected:
+            retireAgentFiles()
             events.yield(.monitorResizeAuthorization(monitorResizeAuthority.advance()))
             agentConnected = false
             peerAgentCaps = CapabilitySet()
@@ -240,6 +323,7 @@ public actor MainChannel {
         let wasConnected = agentConnected
         agentConnected = true
         if !wasConnected {
+            retireAgentFiles()
             events.yield(.monitorResizeAuthorization(monitorResizeAuthority.advance()))
             try await connection.send(MainClientEncoder.agentStart(tokens: Self.agentReceiveTokens))
             events.yield(.agentConnected(true))
