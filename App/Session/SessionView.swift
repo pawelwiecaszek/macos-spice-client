@@ -84,6 +84,11 @@ struct SessionView: View {
                 .accessibilityIdentifier("showConnectionsFromVDI")
             }
             ToolbarItemGroup(placement: .primaryAction) {
+                if let notice = controller.displayNotice {
+                    Label("View Only", systemImage: "exclamationmark.display")
+                        .help(notice)
+                        .accessibilityLabel(notice)
+                }
                 if controller.usb.isAllowed {
                     USBToolbarItems(usb: controller.usb, connected: controller.phase == .connected)
                 }

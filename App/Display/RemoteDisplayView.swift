@@ -22,6 +22,7 @@ final class RemoteDisplayView: NSView {
     var hotkeys = HotkeyMatcher(profile: nil)
     /// SPICE display (monitor) this view shows; used for absolute pointer positions.
     var displayID: UInt8 = 0
+    var acceptsGuestInput = true
     /// Forward Command-key combinations (as the Windows key) except reserved ones.
     var sendsCommandToGuest = true
 
@@ -40,6 +41,8 @@ final class RemoteDisplayView: NSView {
     private var scrollAccumulator = CGPoint.zero
     private var motionRemainder = CGPoint.zero
     private var guestCursor: NSCursor?
+    private var guestCursorImage: CursorImage?
+    private var cursorScale: CGFloat?
     /// Guest asked to hide its cursor (client mode shows nothing then).
     var guestCursorVisible = true {
         didSet { window?.invalidateCursorRects(for: self) }
@@ -127,6 +130,7 @@ final class RemoteDisplayView: NSView {
         if layer.drawableSize != size {
             layer.drawableSize = size
             renderer.setNeedsDisplay()
+            refreshCursorScale()
             delegate?.displayView(self, didResizeTo: size)
         }
     }
@@ -147,8 +151,18 @@ final class RemoteDisplayView: NSView {
 
     func setGuestCursor(_ cursor: CursorImage?) {
         renderer.setCursor(cursor)
+        guestCursorImage = cursor
+        cursorScale = nil
+        refreshCursorScale()
+    }
+
+    private func refreshCursorScale() {
+        let scale = displayScale
+        guard scale.isFinite, scale > 0, cursorScale != scale else { return }
+        cursorScale = scale
+        let cursor = guestCursorImage
         if let cursor {
-            guestCursor = Self.makeCursor(cursor, scale: displayScale)
+            guestCursor = Self.makeCursor(cursor, scale: scale)
         } else {
             guestCursor = Self.invisibleCursor
         }
@@ -165,9 +179,9 @@ final class RemoteDisplayView: NSView {
 
     /// Guest pixels per view point.
     private var displayScale: CGFloat {
-        guard let layer = metalLayer, renderer.surfaceSize.width > 0 else { return 1 }
+        guard let layer = metalLayer, renderer.presentationSize.width > 0 else { return 1 }
         let frame = renderer.surfaceFrame(in: layer.drawableSize)
-        return frame.width / CGFloat(renderer.surfaceSize.width) / layer.contentsScale
+        return frame.width / renderer.presentationSize.width / layer.contentsScale
     }
 
     private static let invisibleCursor = NSCursor(image: NSImage(size: NSSize(width: 1, height: 1)), hotSpot: .zero)
@@ -193,10 +207,11 @@ final class RemoteDisplayView: NSView {
     /// Maps a view point (flipped, points) to guest surface pixels, clamped to the surface.
     func guestPoint(for viewPoint: NSPoint) -> (x: UInt32, y: UInt32)? {
         guard let layer = metalLayer else { return nil }
-        let (width, height) = renderer.surfaceSize
+        let width = Int(renderer.presentationSize.width), height = Int(renderer.presentationSize.height)
         guard width > 0, height > 0 else { return nil }
         let frame = renderer.surfaceFrame(in: layer.drawableSize)
         let px = viewPoint.x * layer.contentsScale, py = viewPoint.y * layer.contentsScale
+        guard frame.width > 0, frame.height > 0, px.isFinite, py.isFinite else { return nil }
         let gx = (px - frame.minX) * CGFloat(width) / frame.width
         let gy = (py - frame.minY) * CGFloat(height) / frame.height
         let x = min(max(0, Int(gx.rounded(.down))), width - 1)
@@ -222,6 +237,7 @@ final class RemoteDisplayView: NSView {
     override func otherMouseDragged(with event: NSEvent) { handleMotion(event) }
 
     private func handleMotion(_ event: NSEvent) {
+        guard acceptsGuestInput else { return }
         if clientMouseMode {
             let point = convert(event.locationInWindow, from: nil)
             guard let guest = guestPoint(for: point) else { return }
@@ -240,6 +256,7 @@ final class RemoteDisplayView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        guard acceptsGuestInput else { return }
         window?.makeFirstResponder(self)
         if !clientMouseMode && !isPointerLocked {
             lockPointer()

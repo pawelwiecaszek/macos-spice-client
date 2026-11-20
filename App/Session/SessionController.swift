@@ -41,6 +41,7 @@ final class SessionController: RemoteDisplayViewDelegate {
     private(set) var title: String
     private(set) var clientMouseMode = true
     private(set) var agentConnected = false
+    var displayNotice: String?
     private(set) var isAuthenticationFailure = false
     private(set) var endKind: EndKind = .failed
     /// This session is itself an attempt to reconnect a dropped one.
@@ -59,8 +60,7 @@ final class SessionController: RemoteDisplayViewDelegate {
     @ObservationIgnored private let session: SpiceSession
     @ObservationIgnored private var tasks: [Task<Void, Never>] = []
     @ObservationIgnored private var resizeTask: Task<Void, Never>?
-    /// Windows of additional guest monitors, by SPICE display id (M6 groundwork).
-    @ObservationIgnored private var secondaryWindows: [UInt8: SecondaryDisplayWindow] = [:]
+    @ObservationIgnored private(set) var displays: SessionDisplays?
     @ObservationIgnored private let settings: AppSettings
     @ObservationIgnored private let log = Logger(subsystem: "com.pawelwiecaszek.spiceclient", category: "session")
     @ObservationIgnored weak var window: NSWindow?
@@ -105,10 +105,11 @@ final class SessionController: RemoteDisplayViewDelegate {
         displayView?.sendsCommandToGuest = settings.sendCommandKeyToGuest
         displayView?.delegate = self
         displayView?.setAccessibilityLabel(String(localized: "Screen of \(profile.displayTitle)"))
+        if let displayView { displays = SessionDisplays(owner: self, primary: displayView, settings: settings) }
         if displayView == nil { phase = .ended(String(localized: "Metal is not available on this Mac.")) }
         clipboard.isWindowActive = { [weak self] in
-            guard let window = self?.window else { return false }
-            return window.isKeyWindow && NSApp.isActive
+            guard let self, NSApp.isActive else { return false }
+            return self.window?.isKeyWindow == true || self.displays?.windows.values.contains { $0.window.isKeyWindow } == true
         }
     }
 
@@ -190,8 +191,7 @@ final class SessionController: RemoteDisplayViewDelegate {
         reconnectTask?.cancel()
         restoreTask?.cancel()
         displayView?.stop()
-        for window in secondaryWindows.values { window.close() }
-        secondaryWindows.removeAll()
+        displays?.stop()
         usb.stop()
         smartcard.stop()
         clipboard.stop()
@@ -425,14 +425,13 @@ final class SessionController: RemoteDisplayViewDelegate {
             if reconnect != nil { announce(String(localized: "Reconnected to \(title)")) }
             restoreCarryOver()
         case .state(.disconnected(let failure)):
-            displayView?.stop()
+            displays?.stop()
             sessionEnded(failure)
         case .state(.idle):
             break
         case .mouseMode(let mode):
             clientMouseMode = mode.contains(.client)
-            displayView?.clientMouseMode = clientMouseMode
-            for window in secondaryWindows.values { window.view.clientMouseMode = clientMouseMode }
+            displays?.setMouseMode(clientMouseMode)
         case .agentConnected(let connected):
             agentConnected = connected
             if connected { scheduleGuestResize() }
@@ -447,61 +446,26 @@ final class SessionController: RemoteDisplayViewDelegate {
         }
     }
 
-    private func handle(_ event: DisplayEvent) {
-        // Return the update credit even if nothing is drawn (applying is synchronous).
+    func handle(_ event: DisplayEvent) {
         defer { if case .update = event { session.displayCredit.consumed() } }
-        guard let view = displayView else { return }
-        switch event {
-        case .primarySurfaceCreated(_, let width, let height):
-            view.renderer.createSurface(width: width, height: height)
-            adjustWindow(toGuestWidth: width, height: height)
-        case .primarySurfaceDestroyed:
-            view.renderer.destroySurface()
-        case .update(let update):
-            view.renderer.apply(update)
-        case .monitorsConfig:
-            break
-        }
+        displays?.handle(event, channel: 0)
+        if displays?.allowsLegacyResize != true { resizeTask?.cancel() }
+        if case .primarySurfaceCreated = event { scheduleGuestResize() }
     }
 
-    private func handle(_ event: SecondaryDisplayEvent) {
+    func handle(_ event: SecondaryDisplayEvent) {
         let id = event.display
         defer {
             if case .update = event.event, Int(id) >= 1, Int(id) <= session.secondaryDisplayCredits.count {
                 session.secondaryDisplayCredits[Int(id) - 1].consumed()
             }
         }
-        switch event.event {
-        case .primarySurfaceCreated(_, let width, let height):
-            if secondaryWindows[id] == nil {
-                guard let window = SecondaryDisplayWindow(display: id, owner: self, title: title, settings: settings) else { return }
-                window.view.clientMouseMode = clientMouseMode
-                secondaryWindows[id] = window
-            }
-            secondaryWindows[id]?.show(width: width, height: height)
-        case .primarySurfaceDestroyed:
-            secondaryWindows.removeValue(forKey: id)?.close()
-        case .update(let update):
-            secondaryWindows[id]?.view.renderer.apply(update)
-        case .monitorsConfig:
-            break
-        }
+        displays?.handle(event.event, channel: id)
+        if displays?.allowsLegacyResize != true { resizeTask?.cancel() }
+        if case .primarySurfaceCreated = event.event { scheduleGuestResize() }
     }
 
-    private func handle(_ event: CursorEvent) {
-        guard let view = displayView else { return }
-        switch event {
-        case .shape(let image):
-            view.setGuestCursor(image)
-        case .move(let x, let y):
-            view.renderer.cursorPosition = SIMD2(Float(x), Float(y))
-        case .visible(let visible):
-            view.guestCursorVisible = visible
-            view.renderer.showsCursorOverlay = visible && !clientMouseMode
-        case .reset:
-            view.setGuestCursor(nil)
-        }
-    }
+    private func handle(_ event: CursorEvent) { displays?.handle(event) }
 
     // MARK: Actions
 
@@ -512,8 +476,10 @@ final class SessionController: RemoteDisplayViewDelegate {
     }
 
     func releaseCursor() {
-        displayView?.releasePointerLock()
-        displayView?.releaseAllInput()
+        for view in displays?.allViews ?? [] {
+            view.releasePointerLock()
+            view.releaseAllInput()
+        }
     }
 
     func toggleFullscreen() {
@@ -523,14 +489,14 @@ final class SessionController: RemoteDisplayViewDelegate {
     // MARK: RemoteDisplayViewDelegate
 
     func displayView(_ view: RemoteDisplayView, send event: InputEvent) {
-        guard phase == .connected else { return }
+        guard phase == .connected, view.acceptsGuestInput else { return }
         session.send(event)
     }
 
     func displayView(_ view: RemoteDisplayView, perform action: HotkeyAction) {
         switch action {
-        case .toggleFullscreen: toggleFullscreen()
-        case .releaseCursor: releaseCursor()
+        case .toggleFullscreen: view.window?.toggleFullScreen(nil)
+        case .releaseCursor: view.releasePointerLock(); view.releaseAllInput()
         case .secureAttention: sendCtrlAltDelete()
         }
     }
@@ -548,7 +514,7 @@ final class SessionController: RemoteDisplayViewDelegate {
 
     /// Debounced (~300 ms) request for the guest to match the window size (needs vdagent).
     private func scheduleGuestResize() {
-        guard settings.resizeGuestWithWindow, agentConnected, let view = displayView else { return }
+        guard settings.resizeGuestWithWindow, agentConnected, displays?.allowsLegacyResize == true else { return }
         resizeTask?.cancel()
         let session = self.session
         let retina = settings.useRetinaResolution
@@ -557,18 +523,17 @@ final class SessionController: RemoteDisplayViewDelegate {
             let scale = retina ? (view.window?.backingScaleFactor ?? 2) : 1
             return (Int(view.bounds.width * scale) & ~1, Int(view.bounds.height * scale))
         }
-        var sizes: [UInt8: (width: Int, height: Int)] = [0: guestSize(view)]
-        for (id, window) in secondaryWindows where window.window.isVisible { sizes[id] = guestSize(window.view) }
-        resizeTask = Task {
+        let sizes = (displays?.legacyViews ?? [:]).mapValues { guestSize($0) }
+        resizeTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(300))
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, self?.displays?.allowsLegacyResize == true else { return }
             await session.requestGuestMonitors(sizes)
         }
     }
 
     /// Sizes the window to the guest (1 guest pixel = 1 point, or 1 pixel in Retina mode)
     /// unless it is fullscreen or the guest follows the window size instead.
-    private func adjustWindow(toGuestWidth width: Int, height: Int) {
+    func adjustWindow(toGuestWidth width: Int, height: Int) {
         guard let window, !window.styleMask.contains(.fullScreen) else { return }
         // After a reconnect the window keeps the size the user had.
         guard reconnect == nil else { return }

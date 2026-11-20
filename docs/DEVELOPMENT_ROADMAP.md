@@ -150,3 +150,7 @@ bounded video deadline scheduling/reporting. Automated regressions pass; live
 same-guest A/V drift, output-route and microphone acceptance remain pending.
 See [media timing and evidence](AUDIO_TIMING.md). C4 monitor work and Phase 6 broker
 actions remain separate scopes.
+
+C4 first slice implements bounded per-head shared-texture presentation, monitor-local
+input and layout/window lifecycle handling. Full-set positioned/sparse guest resize
+and live multi-head acceptance remain pending. See [monitor contracts](MONITOR_LAYOUTS.md).
