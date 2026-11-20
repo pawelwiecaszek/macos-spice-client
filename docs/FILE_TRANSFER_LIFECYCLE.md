@@ -42,9 +42,11 @@ queue limits/reserved cancellation and fresh guest-disabled policy. Hosted tests
 cover replacement workers, late completion/errors/progress, resource release and
 queue limits.
 
-Live acceptance remains pending: send a small text file and an image, confirm their
-contents in the guest, cancel an in-progress larger file, then send another file and
-confirm the VDI stays connected and the progress UI belongs to the new transfer.
+The user reported all requested live checks passed on build `bdbc387`: sending a
+small text file and an image and verifying their contents in the guest, cancelling
+a larger transfer, then successfully sending another file with working progress
+and the VDI remaining connected. This accepts the file-transfer slice on that
+deployment; it does not establish other guest/agent combinations or device support.
 Check the guest download folder before repeating an ambiguous/cancelled transfer;
 partial files are guest-agent behavior. This slice does not add guest-to-Mac file
 receiving or WebDAV folders.

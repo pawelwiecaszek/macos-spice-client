@@ -157,4 +157,6 @@ authorization and bounded delivery coverage. User-reported single- and two-virtu
 
 C5 begins with [file-transfer lifetime](FILE_TRANSFER_LIFECYCLE.md): cancellable
 status waits, bounded independently owned delivery, fresh agent/policy checks and
-generation-bound app progress. Clipboard and hardware-specific acceptance remain separate.
+generation-bound app progress. The user accepted normal text/image transfer,
+cancellation, replacement progress and continued VDI connectivity on build `bdbc387`.
+Clipboard and hardware-specific acceptance remain separate.
