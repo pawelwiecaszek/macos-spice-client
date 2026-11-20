@@ -25,6 +25,7 @@
 		A1B2C3D40000000000001007 /* MacOS Spice Client.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "MacOS Spice Client.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		A1B2C3D40000000000001008 /* SpiceClientUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SpiceClientUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A1B2C3D40000000000001006 /* SpiceClientUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpiceClientUITests.swift; sourceTree = "<group>"; };
+		B00000000000000000000002 /* SpiceClientTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = SpiceClientTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -49,6 +50,7 @@
 			path = App;
 			sourceTree = "<group>";
 		};
+		B00000000000000000000003 /* AppIntegrationTests */ = {isa = PBXFileSystemSynchronizedRootGroup; path = AppIntegrationTests; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -67,6 +69,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B00000000000000000000005 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -75,6 +78,7 @@
 			children = (
 				A1B2C3D40000000000001003 /* App */,
 				A1B2C3D40000000000001005 /* UITests */,
+				B00000000000000000000003 /* AppIntegrationTests */,
 				A1B2C3D40000000000001002 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -84,6 +88,7 @@
 			children = (
 				A1B2C3D40000000000001007 /* MacOS Spice Client.app */,
 				A1B2C3D40000000000001008 /* SpiceClientUITests.xctest */,
+				B00000000000000000000002 /* SpiceClientTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -141,6 +146,18 @@
 			productReference = A1B2C3D40000000000001008 /* SpiceClientUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		B00000000000000000000001 /* SpiceClientTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B00000000000000000000006;
+			buildPhases = (B00000000000000000000004, B00000000000000000000005);
+			buildRules = ();
+			dependencies = (A1B2C3D40000000000001015);
+			fileSystemSynchronizedGroups = (B00000000000000000000003);
+			name = SpiceClientTests;
+			productName = SpiceClientTests;
+			productReference = B00000000000000000000002;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -179,6 +196,7 @@
 			targets = (
 				A1B2C3D40000000000001009 /* SpiceClient */,
 				A1B2C3D4000000000000100A /* SpiceClientUITests */,
+				B00000000000000000000001 /* SpiceClientTests */,
 			);
 		};
 /* End PBXProject section */
@@ -216,6 +234,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B00000000000000000000004 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -373,6 +392,32 @@
 			};
 			name = Release;
 		};
+		B00000000000000000000007 = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pawelwiecaszek.spiceclient.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MacOS Spice Client.app/Contents/MacOS/MacOS Spice Client";
+			};
+			name = Debug;
+		};
+		B00000000000000000000008 = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pawelwiecaszek.spiceclient.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MacOS Spice Client.app/Contents/MacOS/MacOS Spice Client";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -403,6 +448,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		B00000000000000000000006 = {isa = XCConfigurationList; buildConfigurations = (B00000000000000000000007, B00000000000000000000008); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */

@@ -4,6 +4,8 @@ import SpiceWire
 /// Connects and links channels for one session.
 public struct ChannelOpener: Sendable {
     public let endpoint: SpiceEndpoint
+    /// One ordering domain for all channels opened for this session.
+    public let synchronization: ChannelSynchronization
     public let connector: any StreamConnector
     public let encryptor: any TicketEncryptor
     /// Returns the ticket bytes, or `nil` once wiped (then an empty ticket is sent).
@@ -14,8 +16,9 @@ public struct ChannelOpener: Sendable {
     public var linkTimeout: Duration = .seconds(20)
 
     public init(endpoint: SpiceEndpoint, connector: any StreamConnector, encryptor: any TicketEncryptor,
-                ticket: @escaping @Sendable () -> [UInt8]?) {
+                synchronization: ChannelSynchronization? = nil, ticket: @escaping @Sendable () -> [UInt8]?) {
         self.endpoint = endpoint
+        self.synchronization = synchronization ?? ChannelSynchronization()
         self.connector = connector
         self.encryptor = encryptor
         self.ticket = ticket
@@ -60,7 +63,10 @@ public struct ChannelOpener: Sendable {
                 return result
             }
             log.debug("\(type):\(id) linked (tls=\(route.useTLS))")
-            return ChannelConnection(type: type, id: id, stream: stream, serverCaps: linked.serverChannelCaps)
+            let connection = ChannelConnection(type: type, id: id, stream: stream,
+                                               serverCaps: linked.serverChannelCaps, synchronization: synchronization)
+            try await connection.prepare()
+            return connection
         } catch {
             await stream.close()
             throw error

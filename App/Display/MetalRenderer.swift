@@ -13,6 +13,8 @@ final class MetalRenderer {
     struct QuadUniforms {
         var scale: SIMD2<Float>
         var offset: SIMD2<Float>
+        var uvScale = SIMD2<Float>(1, 1)
+        var uvOffset = SIMD2<Float>(0, 0)
     }
 
     let device: any MTLDevice
@@ -25,6 +27,23 @@ final class MetalRenderer {
 
     private(set) var surfaceTexture: (any MTLTexture)?
     private(set) var surfaceSize: (width: Int, height: Int) = (0, 0)
+    /// Surface-pixel crop for one head. Nil presents the full surface; an invalid
+    /// or wholly outside rectangle intentionally presents only the clear color.
+    var sourceRect: CGRect? { didSet { needsDisplay = true } }
+
+    var resolvedSourceRect: CGRect? {
+        let bounds = CGRect(x: 0, y: 0, width: surfaceSize.width, height: surfaceSize.height)
+        guard bounds.width > 0, bounds.height > 0 else { return nil }
+        guard let sourceRect else { return bounds }
+        guard sourceRect.origin.x.isFinite, sourceRect.origin.y.isFinite,
+              sourceRect.size.width.isFinite, sourceRect.size.height.isFinite,
+              sourceRect.size.width > 0, sourceRect.size.height > 0,
+              sourceRect.maxX.isFinite, sourceRect.maxY.isFinite else { return nil }
+        let clipped = sourceRect.intersection(bounds)
+        return clipped.isNull || clipped.isEmpty ? nil : clipped
+    }
+
+    var presentationSize: CGSize { resolvedSourceRect?.size ?? .zero }
 
     private var cursorTexture: (any MTLTexture)?
     private var cursorHotSpot = SIMD2<Float>(0, 0)
@@ -111,6 +130,18 @@ final class MetalRenderer {
         needsDisplay = true
     }
 
+    /// Heads on one SPICE surface share its upload texture. Only the owning
+    /// renderer applies updates; callers mark each adopting renderer dirty.
+    func adoptSurface(from renderer: MetalRenderer) {
+        guard device.registryID == renderer.device.registryID else {
+            destroySurface()
+            return
+        }
+        surfaceTexture = renderer.surfaceTexture
+        surfaceSize = renderer.surfaceSize
+        needsDisplay = true
+    }
+
     func apply(_ update: SurfaceUpdate) {
         guard let texture = surfaceTexture else { return }
         let rect = update.rect
@@ -152,10 +183,11 @@ final class MetalRenderer {
 
     /// Where the surface lands in a drawable of `size` pixels (aspect fit, centred).
     func surfaceFrame(in size: CGSize) -> CGRect {
-        let (w, h) = surfaceSize
-        guard w > 0, h > 0, size.width > 0, size.height > 0 else { return .zero }
-        let scale = min(size.width / CGFloat(w), size.height / CGFloat(h))
-        let width = CGFloat(w) * scale, height = CGFloat(h) * scale
+        let source = presentationSize
+        guard source.width > 0, source.height > 0, size.width.isFinite, size.height.isFinite,
+              size.width > 0, size.height > 0 else { return .zero }
+        let scale = min(size.width / source.width, size.height / source.height)
+        let width = source.width * scale, height = source.height * scale
         return CGRect(x: (size.width - width) / 2, y: (size.height - height) / 2, width: width, height: height)
     }
 
@@ -185,29 +217,39 @@ final class MetalRenderer {
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
         encoder.label = "Surface pass"
 
-        if let texture = surfaceTexture {
+        if let texture = surfaceTexture, let source = resolvedSourceRect {
             let frame = surfaceFrame(in: size)
             var quad = uniforms(for: frame, in: size)
-            let exact = abs(frame.width - CGFloat(texture.width)) < 0.5 && abs(frame.height - CGFloat(texture.height)) < 0.5
+            quad.uvScale = SIMD2(Float(source.width / CGFloat(texture.width)), Float(source.height / CGFloat(texture.height)))
+            quad.uvOffset = SIMD2(Float(source.minX / CGFloat(texture.width)), Float(source.minY / CGFloat(texture.height)))
+            let exact = abs(frame.width - source.width) < 0.5 && abs(frame.height - source.height) < 0.5
             encoder.setRenderPipelineState(surfacePipeline)
             encoder.setVertexBytes(&quad, length: MemoryLayout<QuadUniforms>.stride, index: 0)
+            encoder.setFragmentBytes(&quad, length: MemoryLayout<QuadUniforms>.stride, index: 0)
             encoder.setFragmentTexture(texture, index: 0)
             encoder.setFragmentSamplerState(exact ? nearestSampler : linearSampler, index: 0)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
 
             if showsCursorOverlay, let cursor = cursorTexture {
-                let scale = frame.width / CGFloat(texture.width)
-                let origin = SIMD2<Float>(cursorPosition.x - cursorHotSpot.x, cursorPosition.y - cursorHotSpot.y)
-                let cursorFrame = CGRect(x: frame.minX + CGFloat(origin.x) * scale,
-                                         y: frame.minY + CGFloat(origin.y) * scale,
+                let scale = frame.width / source.width
+                let cursorFrame = CGRect(x: frame.minX + (CGFloat(cursorPosition.x - cursorHotSpot.x) - source.minX) * scale,
+                                         y: frame.minY + (CGFloat(cursorPosition.y - cursorHotSpot.y) - source.minY) * scale,
                                          width: CGFloat(cursor.width) * scale,
                                          height: CGFloat(cursor.height) * scale)
                 var cursorQuad = uniforms(for: cursorFrame, in: size)
-                encoder.setRenderPipelineState(cursorPipeline)
-                encoder.setVertexBytes(&cursorQuad, length: MemoryLayout<QuadUniforms>.stride, index: 0)
-                encoder.setFragmentTexture(cursor, index: 0)
-                encoder.setFragmentSamplerState(nearestSampler, index: 0)
-                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+                // Clip to the head's fitted image, including cursor hotspots that
+                // place part of its image outside the head or into letterboxing.
+                let left = max(0, Int(ceil(frame.minX))), top = max(0, Int(ceil(frame.minY)))
+                let right = min(drawable.texture.width, Int(floor(frame.maxX)))
+                let bottom = min(drawable.texture.height, Int(floor(frame.maxY)))
+                if right > left, bottom > top {
+                    encoder.setScissorRect(MTLScissorRect(x: left, y: top, width: right - left, height: bottom - top))
+                    encoder.setRenderPipelineState(cursorPipeline)
+                    encoder.setVertexBytes(&cursorQuad, length: MemoryLayout<QuadUniforms>.stride, index: 0)
+                    encoder.setFragmentTexture(cursor, index: 0)
+                    encoder.setFragmentSamplerState(nearestSampler, index: 0)
+                    encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+                }
             }
         }
         encoder.endEncoding()

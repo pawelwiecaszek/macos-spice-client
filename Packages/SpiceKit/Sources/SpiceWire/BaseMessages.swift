@@ -63,6 +63,10 @@ public struct WaitForChannels: Sendable, Hashable {
         public var channelType: UInt8
         public var channelID: UInt8
         public var messageSerial: UInt64
+
+        public init(channelType: UInt8, channelID: UInt8, messageSerial: UInt64) {
+            self.channelType = channelType; self.channelID = channelID; self.messageSerial = messageSerial
+        }
     }
 
     public var entries: [Entry]
@@ -70,6 +74,9 @@ public struct WaitForChannels: Sendable, Hashable {
     public init(decoding bytes: [UInt8]) throws(WireError) {
         var r = ByteReader(bytes)
         let count = try r.readU8()
+        // spice-common@58d375e spice.proto:137–165,531–535: inline 10-byte entries.
+        // Both WAIT_FOR_CHANNELS and INVAL_ALL_PIXMAPS use this exact layout.
+        guard r.remaining == Int(count) * 10 else { throw .invalidValue("channel wait payload length") }
         entries = []
         for _ in 0..<count {
             entries.append(Entry(channelType: try r.readU8(), channelID: try r.readU8(), messageSerial: try r.readU64()))

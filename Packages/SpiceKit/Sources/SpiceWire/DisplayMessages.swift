@@ -284,10 +284,25 @@ public struct MonitorHead: Sendable, Hashable {
     public var x: UInt32
     public var y: UInt32
     public var flags: UInt32
+
+    /// Describes one monitor in the server's surface coordinate system.
+    public init(monitorID: UInt32, surfaceID: UInt32, width: UInt32, height: UInt32,
+                x: UInt32, y: UInt32, flags: UInt32) {
+        self.monitorID = monitorID
+        self.surfaceID = surfaceID
+        self.width = width
+        self.height = height
+        self.x = x
+        self.y = y
+        self.flags = flags
+    }
 }
 
 /// `SPICE_MSG_DISPLAY_MONITORS_CONFIG`.
 public struct MonitorsConfig: Sendable, Hashable {
+    /// Local metadata bound, independent of the server's `max_allowed` value.
+    public static let maximumHeadCount = 64
+
     public var maxAllowed: UInt16
     public var heads: [MonitorHead]
 
@@ -295,13 +310,23 @@ public struct MonitorsConfig: Sendable, Hashable {
         var r = ByteReader(bytes)
         let count = try r.readU16()
         maxAllowed = try r.readU16()
+        guard Int(count) <= Self.maximumHeadCount else { throw .limitExceeded("monitor heads") }
+        // spice.proto Head is seven u32 fields; heads[count] ends the message.
+        let required = Int(count) * 28
+        guard r.remaining >= required else { throw .truncated(needed: required, available: r.remaining) }
+        guard r.remaining == required else { throw .invalidValue("monitor config trailing bytes") }
         heads = []
+        heads.reserveCapacity(Int(count))
+        var monitorIDs: Set<UInt32> = []
         for _ in 0..<count {
-            heads.append(MonitorHead(
+            let head = MonitorHead(
                 monitorID: try r.readU32(), surfaceID: try r.readU32(),
                 width: try r.readU32(), height: try r.readU32(),
                 x: try r.readU32(), y: try r.readU32(), flags: try r.readU32()
-            ))
+            )
+            // Ambiguous IDs cannot safely identify windows, even for disabled heads.
+            guard monitorIDs.insert(head.monitorID).inserted else { throw .invalidValue("duplicate monitor id") }
+            heads.append(head)
         }
     }
 }
