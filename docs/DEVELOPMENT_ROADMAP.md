@@ -167,3 +167,12 @@ delivery and image conversion, and independent agent sending. Local regression
 coverage passes. The user accepted bidirectional text/image sharing, background
 Mac clipboard preservation and reconnect on build `66098b3`. USB/ISO and smartcard
 hardware-specific coverage remains pending.
+
+The USB/ISO slice adds [attachment lifetime](USB_ISO_LIFECYCLE.md): identity-bound
+leases, cleanup reservations, explicit image closure and native availability
+handling. Automated checks cover pending/stale operations. The user accepted ISO
+mount/read/eject/remount and physical USB attach/release on the tested deployment;
+broader hardware coverage remains separate from wire tests. Smartcards follow.
+The user has no smartcard available. Verify lifecycle and no-reader/card states
+without claiming physical card acceptance; keep that hardware check explicitly
+unavailable rather than blocking unrelated progress.

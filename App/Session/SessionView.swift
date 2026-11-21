@@ -282,7 +282,7 @@ struct USBToolbarItems: View {
         Menu {
             if usb.slotCount == 0 {
                 Text("This virtual machine has no USB redirection slots.")
-                Text("In Proxmox: VM › Hardware › Add › USB Device › Spice Port (one per device).")
+                Text("Ask your VM administrator to enable SPICE USB redirection (one slot per device).")
             } else {
                 Section("Devices on this Mac") {
                     if usb.inventory.devices.isEmpty {
@@ -328,7 +328,7 @@ struct USBToolbarItems: View {
                 Label("Mount ISO…", systemImage: "opticaldisc")
             }
             .help("Insert a disc image (.iso) into the virtual machine as a CD/DVD drive")
-            .disabled(!connected || usb.freeSlots == 0)
+            .disabled(!connected || usb.freeSlots == 0 || usb.mountingISO)
         }
     }
 }

@@ -324,7 +324,15 @@ public actor SpiceSession {
     /// The connection file's policy is enforced here for every device, real or emulated
     /// (ISO drives included), so no UI path can bypass it.
     public func attachUSB(_ device: any USBRedirDevice, allowInputDevice: Bool = false) async throws -> Int {
+        try await attachUSBWithLease(device, allowInputDevice: allowInputDevice).slot
+    }
+
+    /// Owns one attachment, so delayed cleanup cannot detach a replacement device.
+    /// Supply a fresh `attachmentID` only when correlating admission with slot events.
+    public func attachUSBWithLease(_ device: any USBRedirDevice, allowInputDevice: Bool = false,
+                                   attachmentID: UUID = UUID()) async throws -> USBAttachmentLease {
         guard usbAllowed else { throw USBAttachError.blockedByConnectionFile }
+        guard state == .connected else { throw USBAttachError.guestNotReady }
         let description = await device.describe()
         if let localUSBFilter, !localUSBFilter.allows(description.filterDevice) {
             throw USBAttachError.blockedByConnectionFile
@@ -333,9 +341,16 @@ public actor SpiceSession {
         if !smartcardAllowed, description.filterDevice.classes.contains(0x0B) {
             throw USBAttachError.blockedByConnectionFile
         }
+        guard state == .connected else { throw USBAttachError.guestNotReady }
         for slot in usbSlots where await slot.isFree {
-            try await slot.attach(device, allowInputDevice: allowInputDevice)
-            return slot.slot
+            guard state == .connected else { throw USBAttachError.guestNotReady }
+            try await slot.attach(device, allowInputDevice: allowInputDevice, attachmentID: attachmentID)
+            let lease = USBAttachmentLease(slot: slot.slot, id: attachmentID, channel: slot)
+            guard state == .connected, usbSlots.contains(where: { $0 === slot }) else {
+                await lease.detach()
+                throw USBAttachError.guestNotReady
+            }
+            return lease
         }
         throw USBAttachError.slotBusy
     }
