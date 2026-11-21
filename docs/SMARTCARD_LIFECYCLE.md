@@ -44,10 +44,13 @@ disconnect operations, stale removal, empty ATR, reset during CCID power-on,
 pending stop/unshare, no-reader/card/access/policy admission and USB identity.
 Review has no outstanding findings. The separate Release build verifies with
 executable SHA-256
-`fb9951a15bea03c6f3159b55f7603e8bde8248fc3a8fb70476056c2cf791161c`.
+`cbbc03dddd3fae9d81389f823e187585a865d84770cac3fd86b50b354a023a17`
+(build `2d1b1fb`, including refreshed offline Help).
 
-Physical card compatibility and a live check of this build's no-reader menu remain
-unverified. No physical-card success is claimed. Sharing a security key's smartcard
+The user accepted all requested final checks, including the no-reader menu, on
+build `2d1b1fb`. Physical card compatibility remains unverified because no card is
+available. No physical-card success is claimed. Sharing a security key's smartcard
 function does not imply sharing its OTP or FIDO functions. The existing channel and
 CCID paths remain the only supported transports; no new dependency or entitlement
-was added. The accepted USB/ISO build and installed C4 application are unchanged.
+was added. The file-transfer, clipboard and USB/ISO live acceptances remain recorded
+in their separate slice documents.
