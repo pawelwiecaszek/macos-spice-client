@@ -1,3 +1,4 @@
+import Foundation
 import SpiceWire
 
 /// A smartcard on the Mac that can be shared with the guest (passthrough: the guest's
@@ -22,6 +23,8 @@ public enum SmartcardError: Error, Equatable, Sendable {
 public enum SmartcardEvent: Sendable, Equatable {
     case inserted(name: String)
     case removed
+    /// Identifies the card lifetime that ended; slot-independent cleanup uses this event.
+    case attachmentRemoved(id: UUID)
 }
 
 /// The smartcard channel: one virtual reader in the guest (QEMU `ccid-card-passthru`)
@@ -37,7 +40,13 @@ public actor SmartcardChannel {
     private var readerID: UInt32?
     private var readerWaiter: CheckedContinuation<UInt32?, Never>?
     private var card: (any SmartcardCard)?
-    private var inserting = false
+    private var attachmentID: UUID?
+    private var insertingID: UUID?
+    private var insertionWaiters: [CheckedContinuation<Void, Never>] = []
+    private var cleanupID: UUID?
+    private var cleanupWaiters: [CheckedContinuation<Void, Never>] = []
+    private var removal: (id: UUID, task: Task<Void, Never>)?
+    private var readerWaiterID: UUID?
     private var closed = false
 
     public init(connection: ChannelConnection, events: AsyncStream<SmartcardEvent>.Continuation) {
@@ -50,23 +59,17 @@ public actor SmartcardChannel {
     // MARK: Channel loop
 
     public func run() async throws {
-        defer {
-            closed = true
-            readerWaiter?.resume(returning: nil)
-            readerWaiter = nil
-        }
         do {
             try await receiveLoop()
         } catch {
-            // Channel gone (EOF, error): give the card back to macOS immediately.
-            await releaseCard()
-            await connection.close()
+            await failChannel()
             throw error
         }
     }
 
     private func receiveLoop() async throws {
         while true {
+            await connection.messageHandled()
             let message = try await connection.nextMessage()
             guard VSCMessage.isData(message) else { continue }
             let vsc: VSCMessage
@@ -81,9 +84,15 @@ public actor SmartcardChannel {
     }
 
     public func close() async {
+        await failChannel()
+    }
+
+    /// Close the wire before waiting on device cleanup, so blocked sends can finish.
+    private func failChannel() async {
         closed = true
-        await releaseCard()
+        expireReaderWaiter()
         await connection.close()
+        await releaseCard()
     }
 
     private func handle(_ message: VSCMessage) async {
@@ -92,6 +101,7 @@ public actor SmartcardChannel {
             let code = message.errorCode ?? VSCErrorCode.generalError.rawValue
             if let waiter = readerWaiter {
                 readerWaiter = nil
+                readerWaiterID = nil
                 waiter.resume(returning: code == VSCErrorCode.success.rawValue ? message.readerID : nil)
             } else if code != VSCErrorCode.success.rawValue {
                 log.info("guest smartcard error \(code) for reader \(message.readerID)")
@@ -106,15 +116,17 @@ public actor SmartcardChannel {
     }
 
     private func transmit(_ message: VSCMessage) async {
-        guard let card, message.readerID == readerID else {
+        guard let card, let attachmentID, message.readerID == readerID else {
             await send(.error(.generalError, readerID: message.readerID))
             return
         }
         do {
             let response = try await card.transmit(message.data)
+            guard self.attachmentID == attachmentID, !closed else { return }
             await send(VSCMessage(.apdu, readerID: message.readerID, data: response))
         } catch {
-            log.info("APDU failed: \(error)")
+            guard self.attachmentID == attachmentID, !closed else { return }
+            log.info("smartcard APDU failed")
             await send(.error(.generalError, readerID: message.readerID))
         }
     }
@@ -122,70 +134,164 @@ public actor SmartcardChannel {
     // MARK: Insert / remove
 
     /// Inserts `newCard` into the guest's virtual reader.
-    public func insert(_ newCard: any SmartcardCard) async throws {
-        // `inserting` closes the window between the check and `card = newCard` (actor
-        // reentrancy at the awaits below).
+    /// A supplied attachment ID must be fresh for each insertion.
+    public func insert(_ newCard: any SmartcardCard, attachmentID: UUID = UUID()) async throws {
+        try Task.checkCancellation()
         guard !closed else { throw SmartcardError.readerNotAccepted }
-        guard card == nil, !inserting else { throw SmartcardError.cardAlreadyShared }
-        inserting = true
-        defer { inserting = false }
-        let reader = try await ensureReader()
-        let atr = try await newCard.connect()
-        guard !atr.isEmpty, !closed else {
-            // Empty ATR, or the channel closed while the card was opening: don't leave an
-            // exclusive session behind.
-            await newCard.disconnect()
-            throw closed ? SmartcardError.readerNotAccepted : SmartcardError.noATR
+        guard card == nil, insertingID == nil, cleanupID == nil else { throw SmartcardError.cardAlreadyShared }
+        insertingID = attachmentID
+        defer {
+            insertingID = nil
+            let waiters = insertionWaiters
+            insertionWaiters.removeAll()
+            for waiter in waiters { waiter.resume() }
         }
-        card = newCard
-        await send(VSCMessage(.atr, readerID: reader, data: atr))
-        events.yield(.inserted(name: newCard.displayName))
-        log.info("card inserted into reader \(reader)")
+        var connectAttempted = false
+        var transferred = false
+        do {
+            let reader = try await ensureReader()
+            try Task.checkCancellation()
+            guard !closed else { throw SmartcardError.readerNotAccepted }
+            connectAttempted = true
+            let atr = try await newCard.connect()
+            try Task.checkCancellation()
+            guard !closed else { throw SmartcardError.readerNotAccepted }
+            guard !atr.isEmpty else { throw SmartcardError.noATR }
+            card = newCard
+            self.attachmentID = attachmentID
+            transferred = true
+            do {
+                try await connection.send(VSCMessage(.atr, readerID: reader, data: atr).encode())
+            } catch {
+                // A partial ATR write leaves peer state ambiguous; do not reuse the channel.
+                await failChannel()
+                throw error
+            }
+            guard !closed, self.attachmentID == attachmentID else { throw SmartcardError.readerNotAccepted }
+            events.yield(.inserted(name: newCard.displayName))
+            log.info("card inserted into reader \(reader)")
+        } catch {
+            if transferred {
+                if self.attachmentID == attachmentID { await releaseCard() }
+                await waitForCleanup(attachmentID)
+            } else if connectAttempted {
+                await newCard.disconnect()
+            }
+            throw error
+        }
     }
 
-    /// Removes the card from the guest and gives it back to macOS.
+    /// Removes the current card. Use its attachment ID for delayed cleanup.
     public func remove() async {
-        guard card != nil else { return }
-        if let readerID { await send(VSCMessage(.cardRemove, readerID: readerID)) }
-        await releaseCard()
+        guard let id = attachmentID ?? cleanupID ?? insertingID else { return }
+        await remove(attachmentID: id)
+    }
+
+    /// Releases only one insertion, including any cleanup already underway.
+    public func remove(attachmentID: UUID) async {
+        if let removal, removal.id == attachmentID {
+            await removal.task.value
+            return
+        }
+        if cleanupID == attachmentID {
+            await waitForCleanup(attachmentID)
+            return
+        }
+        guard self.attachmentID == attachmentID || insertingID == attachmentID else { return }
+        let task = Task { await self.performRemove(attachmentID) }
+        removal = (attachmentID, task)
+        await task.value
+        if removal?.id == attachmentID { removal = nil }
+    }
+
+    private func performRemove(_ id: UUID) async {
+        // A pending reader/connect cannot safely be replayed after cancellation.
+        if insertingID == id, attachmentID != id {
+            await failChannel()
+            await waitForInsertion()
+            return
+        }
+        if let readerID {
+            do {
+                try await connection.send(VSCMessage(.cardRemove, readerID: readerID).encode())
+            } catch {
+                await failChannel()
+                return
+            }
+        }
+        if attachmentID == id { await releaseCard() }
+        await waitForCleanup(id)
     }
 
     private func releaseCard() async {
-        guard let current = card else { return }
+        guard let current = card, let id = attachmentID else {
+            if let cleanupID { await waitForCleanup(cleanupID) }
+            return
+        }
+        cleanupID = id
         card = nil
+        attachmentID = nil
         await current.disconnect()
         events.yield(.removed)
+        events.yield(.attachmentRemoved(id: id))
+        cleanupID = nil
+        let waiters = cleanupWaiters
+        cleanupWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+    }
+
+    private func waitForCleanup(_ id: UUID) async {
+        guard cleanupID == id else { return }
+        await withCheckedContinuation { cleanupWaiters.append($0) }
+    }
+
+    private func waitForInsertion() async {
+        guard insertingID != nil else { return }
+        await withCheckedContinuation { insertionWaiters.append($0) }
     }
 
     private func ensureReader() async throws -> UInt32 {
         if let readerID { return readerID }
-        guard readerWaiter == nil else { throw SmartcardError.cardAlreadyShared }
+        guard !closed, readerWaiter == nil else { throw SmartcardError.readerNotAccepted }
+        let id = UUID()
         let add = VSCMessage(.readerAdd, readerID: VSCMessage.undefinedReaderID, data: Array(Self.readerName.utf8))
         let timeout = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(10))
-            await self?.expireReaderWaiter()
+            do { try await Task.sleep(for: .seconds(10)) } catch { return }
+            guard !Task.isCancelled else { return }
+            await self?.expireReaderWaiter(ifID: id)
         }
-        // Install the waiter before sending so the acknowledgement can't arrive first.
+        // The reader request has an independent writer so feature cancellation cannot
+        // cancel the shared channel socket. Install the waiter before sending.
         let assigned = await withCheckedContinuation { continuation in
+            readerWaiterID = id
             readerWaiter = continuation
-            Task { await self.send(add) }
+            Task { await self.sendReaderAdd(add, id: id) }
         }
         timeout.cancel()
-        guard let assigned else { throw SmartcardError.readerNotAccepted }
+        guard !closed, let assigned, assigned != VSCMessage.undefinedReaderID else {
+            // A late acknowledgement cannot be correlated with a replacement attempt.
+            await failChannel()
+            throw SmartcardError.readerNotAccepted
+        }
         readerID = assigned
         return assigned
     }
 
-    private func expireReaderWaiter() {
+    private func sendReaderAdd(_ message: VSCMessage, id: UUID) async {
+        guard !closed, readerWaiterID == id else { return }
+        do { try await connection.send(message.encode()) }
+        catch { await failChannel() }
+    }
+
+    private func expireReaderWaiter(ifID: UUID? = nil) {
+        if let ifID, readerWaiterID != ifID { return }
+        readerWaiterID = nil
         readerWaiter?.resume(returning: nil)
         readerWaiter = nil
     }
 
     private func send(_ message: VSCMessage) async {
-        do {
-            try await connection.send(message.encode())
-        } catch {
-            log.debug("smartcard send failed: \(error)")
-        }
+        do { try await connection.send(message.encode()) }
+        catch { await failChannel() }
     }
 }

@@ -4,6 +4,7 @@
 @_exported import SpiceTransport
 @_exported import AudioHost
 @_exported import Proxmox
+@_exported import Ravada
 @_exported import SmartcardHost
 @_exported import SpiceWire
 @_exported import USBEmulation
@@ -76,6 +77,13 @@ public enum SessionEvent: Sendable, Equatable {
     case state(SessionState)
     case mouseMode(MouseModes)
     case agentConnected(Bool)
+    /// All server-advertised display channels, including unsupported IDs. Clients
+    /// must not replace a whole monitor set while some channels remain unknown.
+    case displayChannels([UInt8])
+    /// Whether a linked peer promises explicit monitor metadata; a created
+    /// surface alone is not proof of a legacy single-head configuration.
+    case displayMonitorConfiguration(channel: UInt8, supported: Bool)
+    case monitorResizeAuthorization(MonitorResizeAuthorization)
     case guestName(String)
     /// Number of USB redirection slots the VM offers (0 = none / disabled by the `.vv`).
     case usbSlots(Int)
@@ -104,13 +112,14 @@ public actor SpiceSession {
     public nonisolated let cursorEvents: AsyncStream<CursorEvent>
     public nonisolated let usbEvents: AsyncStream<USBSlotEvent>
     public nonisolated let smartcardEvents: AsyncStream<SmartcardEvent>
-    /// Guest audio to play (bounded: about 5 s of 10 ms packets; older ones are dropped).
+    /// Guest audio for one consumer. Bounded packet loss is explicit; START/STOP
+    /// and other control events are never silently evicted by an audio burst.
     public nonisolated let playbackEvents: AsyncStream<PlaybackEvent>
     /// Guest requests to start/stop recording from the microphone.
     public nonisolated let recordEvents: AsyncStream<RecordEvent>
     /// Clipboard messages from the guest (CLIPBOARD selection only; text already in macOS
     /// form: LF line endings, no trailing NUL).
-    public nonisolated let clipboardEvents: AsyncStream<ClipboardMessage>
+    public nonisolated let clipboardEvents: AsyncStream<AgentClipboardDelivery>
 
     private nonisolated let eventSink: AsyncStream<SessionEvent>.Continuation
     private nonisolated let displaySink: AsyncStream<DisplayEvent>.Continuation
@@ -119,24 +128,27 @@ public actor SpiceSession {
     private nonisolated let cursorSink: AsyncStream<CursorEvent>.Continuation
     private nonisolated let usbSink: AsyncStream<USBSlotEvent>.Continuation
     private nonisolated let smartcardSink: AsyncStream<SmartcardEvent>.Continuation
-    private nonisolated let playbackSink: AsyncStream<PlaybackEvent>.Continuation
+    private nonisolated let playbackSink: PlaybackEventBuffer
     private nonisolated let recordSink: AsyncStream<RecordEvent>.Continuation
     private var playback: PlaybackChannel?
     private var record: RecordChannel?
     private var audio = AudioSupport()
-    private nonisolated let clipboardSink: AsyncStream<ClipboardMessage>.Continuation
-    private var guestAgentCaps = CapabilitySet()
+    private nonisolated let clipboardSink: ClipboardDeliveryBuffer
+    var guestAgentCaps = CapabilitySet()
+    var clipboardFailed = false
+    private nonisolated let monitorResizeAuthorities = (0..<SpiceSession.maxDisplays).map { _ in MonitorResizeAuthority() }
     private nonisolated let inputSink: AsyncStream<InputEvent>.Continuation
     private let inputQueue: AsyncStream<InputEvent>
 
     private let opener: ChannelOpener
-    private let clock = MultimediaClock()
+    private nonisolated let clock = MultimediaClock()
     private let configurationError: TransportError?
     private let ticket: SecretTicket?
     private let log = ChannelLogger(category: "session")
 
-    private var state: SessionState = .idle
-    private var main: MainChannel?
+    var state: SessionState = .idle
+    let fileTransfers: SessionFileTransferState
+    var main: MainChannel?
     private var display: DisplayChannel?
     private var inputs: InputsChannel?
     private var cursor: CursorChannel?
@@ -151,7 +163,9 @@ public actor SpiceSession {
     private var sessionID: UInt32?
     private var channelsRequested = false
 
-    public init(profile: ConnectionProfile, connector: any StreamConnector, encryptor: any TicketEncryptor) {
+    public init(profile: ConnectionProfile, connector: any StreamConnector, encryptor: any TicketEncryptor,
+                fileTransferStatusTimeout: Duration = .seconds(30)) {
+        self.fileTransfers = SessionFileTransferState(timeout: fileTransferStatusTimeout)
         (events, eventSink) = AsyncStream.makeStream(bufferingPolicy: .unbounded)
         (displayEvents, displaySink) = AsyncStream.makeStream(bufferingPolicy: .unbounded)
         (secondaryDisplayEvents, secondaryDisplaySink) = AsyncStream.makeStream(bufferingPolicy: .unbounded)
@@ -160,9 +174,9 @@ public actor SpiceSession {
         (inputQueue, inputSink) = AsyncStream.makeStream(bufferingPolicy: .unbounded)
         (usbEvents, usbSink) = AsyncStream.makeStream(bufferingPolicy: .unbounded)
         (smartcardEvents, smartcardSink) = AsyncStream.makeStream(bufferingPolicy: .unbounded)
-        (playbackEvents, playbackSink) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(500))
+        (playbackEvents, playbackSink) = PlaybackEventBuffer.makeStream()
         (recordEvents, recordSink) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(16))
-        (clipboardEvents, clipboardSink) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(16))
+        (clipboardEvents, clipboardSink) = ClipboardDeliveryBuffer.makeStream()
         usbAllowed = profile.enableUSBRedirection != false
         localUSBFilter = profile.usbFilter
         smartcardAllowed = profile.enableSmartcard != false
@@ -249,9 +263,9 @@ public actor SpiceSession {
                 return
             }
             let (mainEvents, mainSink) = AsyncStream<MainEvent>.makeStream()
-            let main = MainChannel(connection: connection, events: mainSink, clock: clock)
+            let main = MainChannel(connection: connection, events: mainSink, clock: clock, clipboardBuffer: clipboardSink)
             self.main = main
-            spawn("main", critical: true) { try await main.run() }
+            spawn("main", critical: true, connection: connection) { try await main.run() }
             tasks.append(Task { [weak self] in
                 for await event in mainEvents { await self?.handle(event) }
             })
@@ -280,16 +294,26 @@ public actor SpiceSession {
     /// Asks the guest agent for one monitor per display id, laid out left to right.
     /// Ids must be contiguous from 0; a missing id ends the list.
     public func requestGuestMonitors(_ sizes: [UInt8: (width: Int, height: Int)]) async {
-        guard let main else { return }
-        var monitors: [(width: UInt32, height: UInt32, x: Int32, y: Int32)] = []
-        var x: Int32 = 0
+        var monitors: [GuestMonitor] = []
+        var x: Int64 = 0
         for id in 0..<UInt8(Self.maxDisplays) {
             guard let size = sizes[id], size.width > 0, size.height > 0 else { break }
-            monitors.append((UInt32(size.width), UInt32(size.height), x, 0))
-            x += Int32(size.width)
+            guard size.width <= 16_384, size.height <= 16_384, let position = Int32(exactly: x) else { return }
+            monitors.append(GuestMonitor(id: id, width: UInt32(size.width), height: UInt32(size.height), x: position, y: 0))
+            x += Int64(size.width)
         }
-        guard !monitors.isEmpty else { return }
-        try? await main.sendToAgent(.monitorsConfig(monitors))
+        guard let layout = GuestMonitorLayout(monitors) else { return }
+        _ = await requestGuestMonitorLayout(layout)
+    }
+
+    /// Submits a complete desired layout. Acceptance means queued for the current
+    /// agent, not that the guest applied it. Sparse/position capabilities are
+    /// checked on the main-channel owner immediately before queue admission.
+    @discardableResult
+    public func requestGuestMonitorLayout(_ layout: GuestMonitorLayout,
+                                         authorizations: [MonitorResizeAuthorization] = []) async -> Bool {
+        guard state == .connected, let main else { return false }
+        return (try? await main.requestMonitorLayout(layout, authorizations: authorizations)) ?? false
     }
 
     // MARK: USB redirection (AGENTS.md §7a/§7b)
@@ -300,7 +324,15 @@ public actor SpiceSession {
     /// The connection file's policy is enforced here for every device, real or emulated
     /// (ISO drives included), so no UI path can bypass it.
     public func attachUSB(_ device: any USBRedirDevice, allowInputDevice: Bool = false) async throws -> Int {
+        try await attachUSBWithLease(device, allowInputDevice: allowInputDevice).slot
+    }
+
+    /// Owns one attachment, so delayed cleanup cannot detach a replacement device.
+    /// Supply a fresh `attachmentID` only when correlating admission with slot events.
+    public func attachUSBWithLease(_ device: any USBRedirDevice, allowInputDevice: Bool = false,
+                                   attachmentID: UUID = UUID()) async throws -> USBAttachmentLease {
         guard usbAllowed else { throw USBAttachError.blockedByConnectionFile }
+        guard state == .connected else { throw USBAttachError.guestNotReady }
         let description = await device.describe()
         if let localUSBFilter, !localUSBFilter.allows(description.filterDevice) {
             throw USBAttachError.blockedByConnectionFile
@@ -309,9 +341,16 @@ public actor SpiceSession {
         if !smartcardAllowed, description.filterDevice.classes.contains(0x0B) {
             throw USBAttachError.blockedByConnectionFile
         }
+        guard state == .connected else { throw USBAttachError.guestNotReady }
         for slot in usbSlots where await slot.isFree {
-            try await slot.attach(device, allowInputDevice: allowInputDevice)
-            return slot.slot
+            guard state == .connected else { throw USBAttachError.guestNotReady }
+            try await slot.attach(device, allowInputDevice: allowInputDevice, attachmentID: attachmentID)
+            let lease = USBAttachmentLease(slot: slot.slot, id: attachmentID, channel: slot)
+            guard state == .connected, usbSlots.contains(where: { $0 === slot }) else {
+                await lease.detach()
+                throw USBAttachError.guestNotReady
+            }
+            return lease
         }
         throw USBAttachError.slotBusy
     }
@@ -348,6 +387,19 @@ public actor SpiceSession {
         audio = support
     }
 
+    /// A synchronous mutex-backed lease avoids late actor hops resurrecting an
+    /// older playback producer after replacement on the main actor.
+    public nonisolated func beginAudioClock() -> UInt64 { clock.beginAudio() }
+
+    @discardableResult
+    public nonisolated func updateAudioClock(time: UInt32, epoch: UInt64, at: ContinuousClock.Instant,
+                                            delayMilliseconds: UInt32? = nil) -> Bool {
+        clock.updateAudio(time: time, epoch: epoch, at: at, delayMilliseconds: delayMilliseconds)
+    }
+
+    public nonisolated func invalidateAudioClock(epoch: UInt64) { clock.invalidateAudio(epoch: epoch) }
+    public nonisolated func endAudioClock(epoch: UInt64) { clock.endAudio(epoch: epoch) }
+
     /// Sends captured microphone audio (raw S16LE or one Opus frame) while the guest records.
     public func sendMicrophone(_ bytes: [UInt8], mode: AudioDataMode) async {
         guard let record else { return }
@@ -358,169 +410,25 @@ public actor SpiceSession {
 
     /// Shares `card` with the guest's virtual reader.
     public func insertSmartcard(_ card: any SmartcardCard) async throws {
-        guard let smartcard else { throw SmartcardError.readerNotAccepted }
-        try await smartcard.insert(card)
+        _ = try await insertSmartcardWithLease(card)
+    }
+
+    /// Owns one insertion so delayed removal cannot affect a replacement card.
+    public func insertSmartcardWithLease(_ card: any SmartcardCard,
+                                         attachmentID: UUID = UUID()) async throws -> SmartcardAttachmentLease {
+        guard smartcardAllowed, state == .connected, let smartcard else { throw SmartcardError.readerNotAccepted }
+        try await smartcard.insert(card, attachmentID: attachmentID)
+        let lease = SmartcardAttachmentLease(id: attachmentID, channel: smartcard)
+        guard state == .connected, self.smartcard === smartcard else {
+            await lease.remove()
+            throw SmartcardError.readerNotAccepted
+        }
+        return lease
     }
 
     /// Takes the shared card back from the guest.
     public func removeSmartcard() async {
         await smartcard?.remove()
-    }
-
-    // MARK: Clipboard (vdagent, AGENTS.md M6)
-
-    /// The guest agent supports on-demand clipboard sharing.
-    public var clipboardSupported: Bool { guestAgentCaps.contains(AgentCapability.clipboardByDemand.rawValue) }
-    private var selectionHeader: Bool { guestAgentCaps.contains(AgentCapability.clipboardSelection.rawValue) }
-    private var guestUsesCRLF: Bool { guestAgentCaps.contains(AgentCapability.guestLineEndCRLF.rawValue) }
-
-    /// Tells the guest the Mac clipboard now holds `types` (data follows on request).
-    public func offerClipboard(_ types: [ClipboardDataType]) async {
-        guard clipboardSupported, !types.isEmpty else { return }
-        await sendAgent(ClipboardCodec.grab(types, selectionHeader: selectionHeader))
-    }
-
-    /// Answers a guest request. Text is given in macOS form and converted for the guest.
-    public func provideClipboard(_ type: ClipboardDataType, data: [UInt8]) async {
-        guard clipboardSupported else { return }
-        let payload = type == .utf8Text
-            ? ClipboardCodec.textToGuest(String(decoding: data, as: UTF8.self), guestUsesCRLF: guestUsesCRLF)
-            : data
-        await sendAgent(ClipboardCodec.data(type, bytes: payload, selectionHeader: selectionHeader))
-    }
-
-    /// Asks the guest for the clipboard contents it offered.
-    public func requestClipboard(_ type: ClipboardDataType) async {
-        guard clipboardSupported else { return }
-        await sendAgent(ClipboardCodec.request(type, selectionHeader: selectionHeader))
-    }
-
-    /// Withdraws an earlier offer (the Mac clipboard no longer has shareable data).
-    public func releaseClipboard() async {
-        guard clipboardSupported else { return }
-        await sendAgent(ClipboardCodec.release(selectionHeader: selectionHeader))
-    }
-
-    private func sendAgent(_ message: AgentMessage) async {
-        guard let main else { return }
-        do {
-            try await main.sendToAgent(message)
-        } catch {
-            log.debug("agent send failed: \(error)")
-        }
-    }
-
-    // MARK: File transfer (drag & drop to the guest)
-
-    public enum FileTransferError: Error, Equatable, Sendable, LocalizedError {
-        case agentUnavailable
-        case disabledByGuest
-        case rejected(FileTransferResult)
-        case notAFile
-        case unreadable
-
-        public var errorDescription: String? {
-            switch self {
-            case .agentUnavailable: "The SPICE guest agent (spice-vdagent) isn’t running in the virtual machine."
-            case .disabledByGuest: "File transfer is disabled in the virtual machine."
-            case .rejected(.notEnoughSpace): "There isn’t enough free space in the virtual machine."
-            case .rejected(.sessionLocked): "The virtual machine’s session is locked."
-            case .rejected(.cancelled): "The transfer was cancelled."
-            case .rejected: "The virtual machine couldn’t save the file."
-            case .notAFile: "Only files can be sent, not folders."
-            case .unreadable: "The file couldn’t be read."
-            }
-        }
-    }
-
-    private var nextFileTransferID: UInt32 = 1
-    private var fileTransferWaiters: [UInt32: CheckedContinuation<FileTransferResult, Never>] = [:]
-    /// Statuses that arrived before anyone waited for them (actor reentrancy).
-    private var earlyFileTransferStatus: [UInt32: FileTransferResult] = [:]
-
-    /// Copies a file into the guest (it lands in the agent's download folder). `progress`
-    /// receives bytes sent so far. Cancelling the task cancels the transfer.
-    public func sendFile(_ url: URL, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws {
-        guard let main, await main.isAgentConnected else { throw FileTransferError.agentUnavailable }
-        guard !guestAgentCaps.contains(AgentCapability.fileXferDisabled.rawValue) else { throw FileTransferError.disabledByGuest }
-        let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-        guard values?.isRegularFile == true else { throw FileTransferError.notAFile }
-        let size = Int64(values?.fileSize ?? 0)
-        guard let handle = try? FileHandle(forReadingFrom: url) else { throw FileTransferError.unreadable }
-        defer { try? handle.close() }
-
-        let id = nextFileTransferID
-        nextFileTransferID &+= 1
-        try await main.sendToAgent(FileTransferCodec.start(id: id, name: url.lastPathComponent, size: UInt64(size)))
-        let first = await waitForFileStatus(id)
-        guard first == .canSendData else { throw FileTransferError.rejected(first) }
-
-        var sent: Int64 = 0
-        do {
-            while sent < size {
-                try Task.checkCancellation()
-                // Pace by the agent's flow control: keep at most ~1 MiB queued.
-                while await main.pendingAgentBytes > 1024 * 1024 {
-                    try await Task.sleep(for: .milliseconds(10))
-                }
-                guard let chunk = try handle.read(upToCount: FileTransferCodec.chunkSize), !chunk.isEmpty else {
-                    throw FileTransferError.unreadable
-                }
-                try await main.sendToAgent(FileTransferCodec.data(id: id, bytes: Array(chunk)[...]))
-                sent += Int64(chunk.count)
-                progress(sent, size)
-            }
-        } catch {
-            try? await main.sendToAgent(FileTransferCodec.status(id: id, result: .cancelled))
-            fileTransferWaiters.removeValue(forKey: id)?.resume(returning: .cancelled)
-            throw error
-        }
-        let result = await waitForFileStatus(id)
-        guard result == .success else { throw FileTransferError.rejected(result) }
-    }
-
-    private func waitForFileStatus(_ id: UInt32) async -> FileTransferResult {
-        if let early = earlyFileTransferStatus.removeValue(forKey: id) { return early }
-        return await withCheckedContinuation { continuation in
-            fileTransferWaiters[id] = continuation
-        }
-    }
-
-    private func fileTransferStatus(id: UInt32, result: FileTransferResult) {
-        if let waiter = fileTransferWaiters.removeValue(forKey: id) {
-            waiter.resume(returning: result)
-        } else if id < nextFileTransferID, earlyFileTransferStatus.count < 64 {
-            earlyFileTransferStatus[id] = result
-        }
-    }
-
-    /// Ends every waiting transfer (agent gone, session over).
-    private func failFileTransfers(_ result: FileTransferResult) {
-        let waiters = fileTransferWaiters
-        fileTransferWaiters.removeAll()
-        earlyFileTransferStatus.removeAll()
-        for waiter in waiters.values { waiter.resume(returning: result) }
-    }
-
-    private func handleClipboard(_ message: AgentMessage) {
-        let decoded: ClipboardMessage?
-        do {
-            decoded = try ClipboardCodec.decode(message, selectionHeader: selectionHeader)
-        } catch {
-            log.info("dropping clipboard message: \(error)")
-            return
-        }
-        guard var decoded else { return }
-        switch decoded {
-        case .grab(let selection, _), .request(let selection, _), .release(let selection):
-            guard selection == .clipboard else { return }
-        case .data(let selection, let type, let bytes):
-            guard selection == .clipboard else { return }
-            if type == .utf8Text {
-                decoded = .data(selection: selection, type: type, bytes: Array(ClipboardCodec.textFromGuest(bytes).utf8))
-            }
-        }
-        clipboardSink.yield(decoded)
     }
 
     /// Current primary surface (e.g. for screenshots).
@@ -532,6 +440,8 @@ public actor SpiceSession {
 
     private func handle(_ event: MainEvent) async {
         switch event {
+        case .monitorResizeAuthorization(let authorization):
+            eventSink.yield(.monitorResizeAuthorization(authorization))
         case .initialized(let id, _, let current, let agent):
             sessionID = id
             eventSink.yield(.mouseMode(current))
@@ -540,20 +450,23 @@ public actor SpiceSession {
             await openChannels(list)
         case .mouseMode(let current, _):
             eventSink.yield(.mouseMode(current))
+        case .clipboardUnavailable:
+            clipboardFailed = true
+            eventSink.yield(.clipboardAvailable(false))
         case .agentConnected(let connected):
             if !connected {
                 guestAgentCaps = CapabilitySet()
+                eventSink.yield(.clipboardAvailable(false))
                 failFileTransfers(.agentNotConnected)
             }
             eventSink.yield(.agentConnected(connected))
         case .agentCapabilities(let caps):
             guestAgentCaps = caps
+            if caps.contains(AgentCapability.fileXferDisabled.rawValue) { failFileTransfers(.disabled) }
             eventSink.yield(.clipboardAvailable(clipboardSupported))
         case .agentMessage(let message):
             if let status = FileTransferCodec.decodeStatus(message) {
                 fileTransferStatus(id: status.id, result: status.result)
-            } else {
-                handleClipboard(message)
             }
         case .guestName(let name):
             eventSink.yield(.guestName(name))
@@ -567,11 +480,12 @@ public actor SpiceSession {
         channelsRequested = true
         let opener = self.opener
         let audioCaps = audio
-        // Only the first display channel is rendered in v1 (multi-monitor groundwork in M6).
+        // Each supported display channel has independent rendering/cache state.
         // The list is server-controlled: drop duplicate (type, id) pairs and cap how many
         // connections it can make us open (one per singleton channel, 16 USB slots).
         var seen = Set<ChannelsList.Entry>()
         let unique = list.filter { seen.insert($0).inserted }
+        eventSink.yield(.displayChannels(unique.filter { $0.type == .display }.map(\.id).sorted()))
         var usbCount = 0
         let wanted = unique.filter { entry in
             switch entry.type {
@@ -596,6 +510,8 @@ public actor SpiceSession {
         }
         log.info("server lists \(list.count) channels; opening \(wanted.count)")
         do {
+            // Declare opening peers before concurrent links; barriers may arrive first.
+            try await opener.synchronization.expect(wanted.map { .init(rawType: $0.rawType, id: $0.id) })
             try await withThrowingTaskGroup(of: ChannelConnection?.self) { group in
                 for entry in wanted {
                     guard let type = entry.type else { continue }
@@ -612,6 +528,7 @@ public actor SpiceSession {
                         do {
                             return try await opener.open(type: type, id: entry.id, connectionID: sessionID, channelCaps: caps)
                         } catch where [ChannelType.usbredir, .smartcard, .playback, .record].contains(type) {
+                            await opener.synchronization.unavailable(.init(type: type, id: entry.id))
                             return nil  // optional devices must not end the session
                         }
                     }
@@ -651,7 +568,7 @@ public actor SpiceSession {
         case .usbredir:
             let channel = USBRedirChannel(slot: Int(id), connection: connection, events: usbSink)
             usbSlots.append(channel)
-            spawn("usbredir \(id)", critical: false) { [weak self] in
+            spawn("usbredir \(id)", critical: false, connection: connection) { [weak self] in
                 do {
                     try await channel.run()
                 } catch {
@@ -662,15 +579,15 @@ public actor SpiceSession {
         case .playback:
             let channel = PlaybackChannel(connection: connection, events: playbackSink)
             playback = channel
-            spawn("playback", critical: false) { try await channel.run() }
+            spawn("playback", critical: false, connection: connection) { try await channel.run() }
         case .record:
             let channel = RecordChannel(connection: connection, events: recordSink)
             record = channel
-            spawn("record", critical: false) { try await channel.run() }
+            spawn("record", critical: false, connection: connection) { try await channel.run() }
         case .smartcard:
             let channel = SmartcardChannel(connection: connection, events: smartcardSink)
             smartcard = channel
-            spawn("smartcard", critical: false) { [weak self] in
+            spawn("smartcard", critical: false, connection: connection) { [weak self] in
                 do {
                     try await channel.run()
                 } catch {
@@ -679,29 +596,35 @@ public actor SpiceSession {
                 }
             }
         case .display where id == 0:
-            let channel = DisplayChannel(connection: connection, events: displaySink, credit: displayCredit, clock: clock)
+            let supportsMonitors = connection.serverCaps.contains(DisplayCapability.monitorsConfig.rawValue)
+            eventSink.yield(.displayMonitorConfiguration(channel: id, supported: supportsMonitors))
+            let channel = DisplayChannel(connection: connection, events: displaySink, credit: displayCredit, clock: clock,
+                                         monitorResizeAuthority: monitorResizeAuthorities[Int(id)])
             display = channel
-            spawn("display", critical: true) { try await channel.run() }
+            spawn("display", critical: true, connection: connection) { try await channel.run() }
         case .display:
+            let supportsMonitors = connection.serverCaps.contains(DisplayCapability.monitorsConfig.rawValue)
+            eventSink.yield(.displayMonitorConfiguration(channel: id, supported: supportsMonitors))
             // Additional monitor: its own stream, forwarded tagged with the display id.
             let (stream, sink) = AsyncStream<DisplayEvent>.makeStream(bufferingPolicy: .unbounded)
             let channel = DisplayChannel(connection: connection, events: sink,
-                                         credit: secondaryDisplayCredits[Int(id) - 1], clock: clock)
+                                         credit: secondaryDisplayCredits[Int(id) - 1], clock: clock,
+                                         monitorResizeAuthority: monitorResizeAuthorities[Int(id)])
             secondaryDisplays[id] = channel
             let forward = secondaryDisplaySink
             tasks.append(Task {
                 for await event in stream { forward.yield(SecondaryDisplayEvent(display: id, event: event)) }
                 forward.yield(SecondaryDisplayEvent(display: id, event: .primarySurfaceDestroyed(surfaceID: 0)))
             })
-            spawn("display \(id)", critical: false) { try await channel.run() }
+            spawn("display \(id)", critical: false, connection: connection) { try await channel.run() }
         case .inputs:
             let channel = InputsChannel(connection: connection)
             inputs = channel
-            spawn("inputs", critical: true) { try await channel.run() }
+            spawn("inputs", critical: true, connection: connection) { try await channel.run() }
         case .cursor:
             let channel = CursorChannel(connection: connection, events: cursorSink)
             cursor = channel
-            spawn("cursor", critical: false) { try await channel.run() }
+            spawn("cursor", critical: false, connection: connection) { try await channel.run() }
         default:
             break
         }
@@ -716,13 +639,16 @@ public actor SpiceSession {
         }
     }
 
-    private func spawn(_ name: String, critical: Bool, _ body: @escaping @Sendable () async throws -> Void) {
+    private func spawn(_ name: String, critical: Bool, connection: ChannelConnection,
+                       _ body: @escaping @Sendable () async throws -> Void) {
         tasks.append(Task { [weak self] in
             do {
                 try await body()
-            } catch is CancellationError {
-                return
+                await connection.close()
             } catch {
+                // A failed handler must close its ordering identity before peers can wait.
+                await connection.close()
+                if error is CancellationError { return }
                 await self?.channelEnded(name, critical: critical, error: error)
             }
         })
@@ -755,6 +681,11 @@ public actor SpiceSession {
     private func teardown(reason: SessionFailure?) async {
         if case .disconnected = state { return }
         setState(.disconnected(reason))
+        clock.reset()
+        // Wake barriers before sequential channel close awaits; old sessions cannot
+        // publish progress into a replacement session's independent opener/coordinator.
+        for authority in monitorResizeAuthorities { authority.invalidate() }
+        await opener.synchronization.shutdown()
         failFileTransfers(.cancelled)
         for task in tasks { task.cancel() }
         ticket?.wipe()

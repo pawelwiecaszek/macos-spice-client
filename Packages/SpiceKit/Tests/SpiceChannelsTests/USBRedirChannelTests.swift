@@ -174,7 +174,8 @@ struct USBRedirChannelTests {
     /// Audit finding 6: a guest that never acknowledges the disconnect can't block detach.
     @Test(.timeLimit(.minutes(1)))
     func detachFinishesWhenTheAckIsWithheld() async throws {
-        let (channel, _, _, loop) = try await makeSlot(caps: USBRedirCapabilities([.ids64, .deviceDisconnectAck]))
+        let (channel, guest, _, loop) = try await makeSlot(caps: USBRedirCapabilities([.ids64, .deviceDisconnectAck]))
+        defer { withExtendedLifetime(guest) {} }
         let clock = ContinuousClock()
         let start = clock.now
         await channel.detach()

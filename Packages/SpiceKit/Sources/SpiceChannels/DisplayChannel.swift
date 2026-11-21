@@ -41,6 +41,8 @@ public struct SurfaceUpdate: Sendable {
 
 /// Events for the renderer.
 public enum DisplayEvent: Sendable {
+    /// Immediately precedes the topology metadata it authorizes.
+    case topologyAuthorization(MonitorResizeAuthorization)
     /// The primary surface was (re)created; clear the presentation texture to this size.
     case primarySurfaceCreated(surfaceID: UInt32, width: Int, height: Int)
     case primarySurfaceDestroyed(surfaceID: UInt32)
@@ -96,51 +98,22 @@ public actor DisplayChannel {
         var isPrimary: Bool
     }
 
-    /// Statistics collected for SPICE_MSGC_DISPLAY_STREAM_REPORT (lets the server adapt the
-    /// bitrate when frames arrive late or fail to decode).
-    struct ReportWindow {
-        var uniqueID: UInt32
-        var maxFrames: UInt32
-        var timeout: Duration
-        var started: ContinuousClock.Instant?
-        var startFrameTime: UInt32 = 0
-        var endFrameTime: UInt32 = 0
-        var frames: UInt32 = 0
-        var drops: UInt32 = 0
-        var lastDelay: Int32 = 0
-
-        init(uniqueID: UInt32, maxFrames: UInt32, timeout: Duration) {
-            self.uniqueID = uniqueID
-            self.maxFrames = maxFrames
-            self.timeout = timeout
-        }
-    }
-
-    struct VideoStream {
-        var report: ReportWindow?
-        var create: StreamCreate
-        var clip: Clip
-        var destination: Rect
-        #if canImport(VideoToolbox) && canImport(CoreMedia)
-        var decoder: VideoDecoder?
-        #endif
-    }
-
-    private let connection: ChannelConnection
+    let connection: ChannelConnection
     private let events: AsyncStream<DisplayEvent>.Continuation
-    private let log = ChannelLogger(category: "display")
+    let log = ChannelLogger(category: "display")
 
     private var surfaces: [UInt32: SurfaceState] = [:]
     private var surfacePixels = 0
     /// Messages that couldn't be decoded (diagnostics and tests).
     public private(set) var decodeErrorCount = 0
     /// Stops the flush retry loop once the channel is gone.
-    private var closed = false
+    var closed = false
     private var primaryID: UInt32?
     private var dirty: Rect?
     private var flushScheduled = false
     private var resolver = ImageResolver(pixmapCacheBudget: DisplayChannel.pixmapCacheBudget)
-    private var streams: [UInt32: VideoStream] = [:]
+    var cachedPixmapCount: Int { resolver.pixmaps.count }
+    var streams: [UInt32: VideoStream] = [:]
     private var warnedTypes: Set<UInt16> = []
 
     /// Hard limits for hostile servers.
@@ -151,29 +124,45 @@ public actor DisplayChannel {
     static let maxStreams = 64
 
     private let credit: DisplayUpdateCredit?
-    private let clock: MultimediaClock?
-    /// Stream reports waiting to be sent (built while handling STREAM_DATA).
-    private var pendingReports: [StreamReport] = []
+    let clock: MultimediaClock?
+    private let monitorResizeAuthority: MonitorResizeAuthority?
+    var pendingReports: [QueuedVideoReport] = []
+    var pendingVideoPixels = 0
+    var videoGeneration: UInt64 = 0
+    var videoFrameSequence: UInt64 = 0
+    var videoReportGeneration: UInt64 = 0
+    var videoTimerGeneration: UInt64 = 0
+    var videoTimer: Task<Void, Never>?
 
     /// `credit` enables backpressure; `nil` (tests) publishes every flush. `clock` (the
     /// server multimedia time) enables stream reports.
     public init(connection: ChannelConnection, events: AsyncStream<DisplayEvent>.Continuation,
-                credit: DisplayUpdateCredit? = nil, clock: MultimediaClock? = nil) {
+                credit: DisplayUpdateCredit? = nil, clock: MultimediaClock? = nil,
+                monitorResizeAuthority: MonitorResizeAuthority? = nil) {
         self.connection = connection
         self.events = events
         self.credit = credit
         self.clock = clock
+        self.monitorResizeAuthority = monitorResizeAuthority
     }
 
     /// Sends `DISPLAY_INIT` and preferences, then processes messages until closed.
     public func run() async throws {
         defer {
             closed = true
+            endVideoStreams()
+            if let primaryID {
+                emitTopologyAuthorization()
+                events.yield(.primarySurfaceDestroyed(surfaceID: primaryID))
+            }
+            monitorResizeAuthority?.invalidate()
             events.finish()
         }
+        // Each display owns its resolver. spice-server@0c2c141 keys pixmap/GLZ
+        // objects by (RedClient,id); distinct UInt8 channel IDs isolate them, including 0.
         try await connection.send(DisplayClientEncoder.initialize(
-            pixmapCacheID: 1, pixmapCacheSize: Int64(Self.pixmapCacheBudget),
-            glzDictionaryID: 1, glzWindowSize: Self.glzWindowSize
+            pixmapCacheID: connection.id, pixmapCacheSize: Int64(Self.pixmapCacheBudget),
+            glzDictionaryID: connection.id, glzWindowSize: Self.glzWindowSize
         ))
         if connection.serverCaps.contains(DisplayCapability.prefCompression.rawValue) {
             // GLZ (global dictionary) compresses best over WAN; QUIC is used for photos.
@@ -184,7 +173,13 @@ public actor DisplayChannel {
             try await connection.send(DisplayClientEncoder.preferredVideoCodecs(Self.videoCodecs))
         }
         while true {
+            await connection.messageHandled()
             let message = try await connection.nextMessage()
+            // spice-common@58d375e spice.proto:531–535 and spice-gtk@f04479c
+            // channel-display.c:1247–1254: wait BEFORE invalidating the pixmap cache.
+            if message.type == DisplayServerMessage.invalAllPixmaps.rawValue {
+                try await connection.waitForChannels(WaitForChannels(decoding: message.payload))
+            }
             do {
                 try handle(message)
             } catch WireError.limitExceeded(let what) {
@@ -199,15 +194,14 @@ public actor DisplayChannel {
                 log.error("image error in message \(message.type): \(error)")
             }
             scheduleFlush()
-            for report in pendingReports {
-                try await connection.send(DisplayClientEncoder.streamReport(report))
-            }
-            pendingReports.removeAll()
+            try await sendVideoReports()
         }
     }
 
     public func close() async {
+        monitorResizeAuthority?.invalidate()
         closed = true
+        endVideoStreams()
         await connection.close()
     }
 
@@ -254,6 +248,61 @@ public actor DisplayChannel {
                 $0.copy(from: source, sourceArea: draw.sourceArea, box: draw.base.box, clip: draw.base.clip,
                         rop: draw.rop, scaleMode: draw.scaleMode, mask: mask)
             }
+        case .drawRop3:
+            let draw = try DrawRop3(decoding: payload)
+            guard let image = draw.source else { throw WireError.invalidValue("ROP3 source image") }
+            let source = try resolve(image)
+            let brush: FillSource
+            switch draw.brush {
+            case .solid(let color): brush = .color(color)
+            case .pattern(let image, let position):
+                guard let image else { throw WireError.invalidValue("ROP3 pattern image") }
+                brush = .pattern(try resolve(image), origin: position)
+            case .none: throw WireError.invalidValue("ROP3 brush")
+            }
+            let mask: DrawMask?
+            if draw.mask.bitmap != nil {
+                guard let decoded = resolver.mask(for: draw.mask) else {
+                    throw ImageResolveError.unsupported("ROP3 mask bitmap")
+                }
+                mask = decoded
+            } else { mask = nil }
+            guard let format = surfaces[draw.base.surfaceID]?.format,
+                  [.xRGB32, .argb32, .x555, .r565].contains(format) else {
+                throw ImageResolveError.unsupported("ROP3 surface format")
+            }
+            guard surfaces[draw.base.surfaceID]?.buffer.rop3WorkIsBounded(box: draw.base.box, clip: draw.base.clip) == true else {
+                throw WireError.limitExceeded("ROP3 clip work budget")
+            }
+            mutate(draw.base) {
+                $0.rop3(from: source, sourceArea: draw.sourceArea, brush: brush, box: draw.base.box,
+                        clip: draw.base.clip, rop: draw.rop, scaleMode: draw.scaleMode, mask: mask, format: format)
+            }
+        case .drawStroke:
+            let draw = try DrawStroke(decoding: payload)
+            let brush: FillSource
+            switch draw.brush {
+            case .none: brush = .color(0)
+            case .solid(let color): brush = .color(color)
+            case .pattern(let image, let position):
+                guard let image else { throw WireError.invalidValue("stroke pattern") }
+                brush = .pattern(try resolve(image), origin: position)
+            }
+            guard let format = surfaces[draw.base.surfaceID]?.format else {
+                throw ImageResolveError.unsupported("stroke surface format")
+            }
+            do {
+                try mutate(draw.base) {
+                    if draw.attributes.isStyled {
+                        return try $0.strokeStyled(path: draw.path, attributes: draw.attributes, brush: brush,
+                                                   box: draw.base.box, clip: draw.base.clip, mode: draw.foreMode, format: format)
+                    }
+                    return try $0.strokeSolid(path: draw.path, brush: brush, box: draw.base.box,
+                                             clip: draw.base.clip, mode: draw.foreMode, format: format)
+                }
+            } catch StrokeError.workLimit { throw WireError.limitExceeded("stroke work budget") }
+            catch StrokeError.invalidPath { throw WireError.invalidValue("stroke path") }
+            catch { throw ImageResolveError.unsupported("stroke raster mode or path") }
         case .drawBlackness, .drawWhiteness, .drawInvers:
             let draw = try DrawMaskOnly(decoding: payload)
             let rop: Ropd = type == .drawBlackness ? .opBlackness : type == .drawWhiteness ? .opWhiteness : .opInvers
@@ -288,50 +337,54 @@ public actor DisplayChannel {
         case .invalAllPalettes:
             resolver.invalidateAllPalettes()
         case .monitorsConfig:
+            emitTopologyAuthorization()
             events.yield(.monitorsConfig(try MonitorsConfig(decoding: payload).heads))
         case .streamCreate:
-            let create = try StreamCreate(decoding: payload)
-            guard streams.count < Self.maxStreams || streams[create.streamID] != nil else {
-                throw WireError.limitExceeded("too many video streams")
-            }
-            var stream = VideoStream(create: create, clip: create.clip, destination: create.destination)
-            switch create.codec {
-            case .mjpeg:
-                break
-            #if canImport(VideoToolbox) && canImport(CoreMedia)
-            case .h264:
-                stream.decoder = VideoDecoder(codec: .h264)
-            case .h265:
-                stream.decoder = VideoDecoder(codec: .h265)
-            #endif
-            default:
-                warnOnce(message.type, "unsupported stream codec \(create.rawCodec)")
-            }
-            streams[create.streamID] = stream
+            try createVideoStream(StreamCreate(decoding: payload))
         case .streamData, .streamDataSized:
             try handleStreamData(StreamData(decoding: payload, sized: type == .streamDataSized))
         case .streamClip:
             let clip = try StreamClip(decoding: payload)
             streams[clip.streamID]?.clip = clip.clip
         case .streamDestroy:
-            streams.removeValue(forKey: try StreamDestroy(decoding: payload).streamID)
+            removeVideoStream(try StreamDestroy(decoding: payload).streamID)
         case .streamDestroyAll:
-            streams.removeAll()
+            endVideoStreams()
         case .reset:
             resolver.invalidateAllPixmaps()
             resolver.invalidateAllPalettes()
-            streams.removeAll()
+            endVideoStreams()
         case .mark, .mode:
             break
         case .streamActivateReport:
-            let activate = try StreamActivateReport(decoding: payload)
-            guard clock != nil, streams[activate.streamID] != nil else { break }
-            streams[activate.streamID]?.report = ReportWindow(
-                uniqueID: activate.uniqueID, maxFrames: max(1, activate.maxWindowSize),
-                timeout: .milliseconds(Int(min(activate.timeoutMS, 60_000))))
+            activateVideoReport(try StreamActivateReport(decoding: payload))
         case .qualityIndicator, .glScanoutUnix, .glDraw:
             break  // not advertised
-        case .drawRop3, .drawStroke, .drawText, .drawComposite:
+        case .drawText:
+            let draw = try DrawText(decoding: payload)
+            func textBrush(_ brush: Brush) throws -> FillSource? {
+                switch brush {
+                case .none: return nil
+                case .solid(let color): return .color(color)
+                case .pattern(let image, let origin):
+                    guard let image else { throw WireError.invalidValue("text pattern") }
+                    return .pattern(try resolve(image), origin: origin)
+                }
+            }
+            let foreground = try textBrush(draw.foregroundBrush), background = try textBrush(draw.backgroundBrush)
+            guard let format = surfaces[draw.base.surfaceID]?.format else {
+                throw ImageResolveError.unsupported("text surface format")
+            }
+            do {
+                try mutate(draw.base) {
+                    try $0.text(draw.string, foreground: foreground, background: background,
+                                  backgroundArea: draw.backgroundArea, box: draw.base.box,
+                                  clip: draw.base.clip, mode: draw.foreMode, format: format)
+                }
+            } catch TextRasterError.workLimit { throw WireError.limitExceeded("text work budget") }
+            catch TextRasterError.invalidGlyphs { throw WireError.invalidValue("text glyphs") }
+            catch { throw ImageResolveError.unsupported("text glyph format or mode") }
+        case .drawComposite:
             warnOnce(message.type, "unsupported draw command")
         }
     }
@@ -355,8 +408,10 @@ public actor DisplayChannel {
         surfacePixels += requested - replaced
         let format = create.format
         let hasAlpha = format == .argb32 || format == .a8 || format == .a1
+        if create.isPrimary { emitTopologyAuthorization() }
         let buffer = PixelBuffer(width: Int(create.width), height: Int(create.height),
                                  fill: hasAlpha ? 0 : 0xFF00_0000, hasAlpha: hasAlpha)
+        if surfaces[create.surfaceID] != nil { removeVideoStreams(forSurface: create.surfaceID) }
         surfaces[create.surfaceID] = SurfaceState(buffer: buffer, format: format, isPrimary: create.isPrimary)
         if create.isPrimary {
             primaryID = create.surfaceID
@@ -367,13 +422,19 @@ public actor DisplayChannel {
     }
 
     private func destroySurface(_ id: UInt32) {
+        removeVideoStreams(forSurface: id)
         guard let removed = surfaces.removeValue(forKey: id) else { return }
         surfacePixels -= removed.buffer.width * removed.buffer.height
         if id == primaryID {
+            emitTopologyAuthorization()
             primaryID = nil
             dirty = nil
             events.yield(.primarySurfaceDestroyed(surfaceID: id))
         }
+    }
+
+    private func emitTopologyAuthorization() {
+        if let authority = monitorResizeAuthority { events.yield(.topologyAuthorization(authority.advance())) }
     }
 
     private func resolve(_ image: Image) throws -> PixelBuffer {
@@ -382,71 +443,18 @@ public actor DisplayChannel {
     }
 
     /// Applies a drawing operation to the target surface and records the dirty area.
-    private func mutate(_ base: DisplayBase, _ body: (inout PixelBuffer) -> Rect) {
+    func mutate(_ base: DisplayBase, _ body: (inout PixelBuffer) throws -> Rect) rethrows {
         guard var state = surfaces[base.surfaceID] else {
             log.debug("draw to unknown surface \(base.surfaceID)")
             return
         }
         surfaces[base.surfaceID] = nil  // keep the buffer uniquely referenced while mutating
-        let changed = body(&state.buffer)
-        surfaces[base.surfaceID] = state
+        defer { surfaces[base.surfaceID] = state }
+        let changed = try body(&state.buffer)
         if base.surfaceID == primaryID, !changed.isEmpty { markDirty(changed) }
     }
 
-    // MARK: Video streams
-
-    private func recordFrame(streamID: UInt32, frameTime: UInt32, dropped: Bool) {
-        guard var report = streams[streamID]?.report, let now = clock?.now else { return }
-        if report.started == nil {
-            report.started = .now
-            report.startFrameTime = frameTime
-        }
-        report.frames += 1
-        if dropped { report.drops += 1 }
-        report.endFrameTime = frameTime
-        report.lastDelay = Int32(truncatingIfNeeded: Int64(frameTime) - Int64(now))
-        if report.frames >= report.maxFrames || ContinuousClock.now - (report.started ?? .now) >= report.timeout {
-            pendingReports.append(StreamReport(
-                streamID: streamID, uniqueID: report.uniqueID, startFrameMMTime: report.startFrameTime,
-                endFrameMMTime: report.endFrameTime, frames: report.frames, drops: report.drops,
-                lastFrameDelay: report.lastDelay))
-            report = ReportWindow(uniqueID: report.uniqueID, maxFrames: report.maxFrames, timeout: report.timeout)
-        }
-        streams[streamID]?.report = report
-    }
-
-    private func handleStreamData(_ data: StreamData) throws {
-        guard var stream = streams[data.streamID] else { return }
-        if let resize = data.resize { stream.destination = resize.destination }
-        streams[data.streamID] = stream
-        var decoded: PixelBuffer?
-        switch stream.create.codec {
-        case .mjpeg:
-            #if canImport(ImageIO)
-            decoded = try? JPEGDecoder.decode(data.data)
-            #endif
-            break  // keeps the case non-empty where ImageIO is unavailable
-        case .h264, .h265:
-            #if canImport(VideoToolbox) && canImport(CoreMedia)
-            do {
-                decoded = try stream.decoder?.decode(data.data)
-            } catch {
-                log.debug("video frame decode failed: \(error)")
-            }
-            #endif
-            break  // keeps the case non-empty where VideoToolbox is unavailable
-        default:
-            break
-        }
-        recordFrame(streamID: data.streamID, frameTime: data.multimediaTime, dropped: decoded == nil)
-        guard var frame = decoded else { return }
-        if !stream.create.isTopDown { frame.flipVertically() }
-        let base = DisplayBase(surfaceID: stream.create.surfaceID, box: stream.destination, clip: stream.clip)
-        mutate(base) {
-            $0.copy(from: frame, sourceArea: frame.bounds, box: stream.destination, clip: stream.clip,
-                    rop: .opPut, scaleMode: .interpolate)
-        }
-    }
+    func hasSurface(_ id: UInt32) -> Bool { surfaces[id] != nil }
 
     // MARK: Flushing
 
@@ -454,7 +462,7 @@ public actor DisplayChannel {
         dirty = (dirty ?? rect).union(rect)
     }
 
-    private func scheduleFlush() {
+    func scheduleFlush() {
         guard dirty != nil, !flushScheduled else { return }
         flushScheduled = true
         Task { self.flush() }
@@ -489,7 +497,7 @@ public actor DisplayChannel {
         primaryID.flatMap { surfaces[$0]?.buffer }
     }
 
-    private func warnOnce(_ type: UInt16, _ text: String) {
+    func warnOnce(_ type: UInt16, _ text: String) {
         if warnedTypes.insert(type).inserted { log.info("\(text) (type \(type))") }
     }
 }

@@ -2,48 +2,86 @@ import AppKit
 import Observation
 import SpiceKit
 
-/// Smartcard sharing for one session: one card at a time.
-///
-/// Two transports, chosen automatically:
-/// * the SPICE smartcard channel, when the VM has QEMU's `ccid-card-passthru` (§7c);
-/// * otherwise an emulated USB CCID reader in a free USB redirection slot — this is what
-///   works on stock Proxmox, whose QEMU is built without the passthru device.
+/// One smartcard share, through the native channel or a USB CCID attachment.
 @MainActor
 @Observable
 final class SmartcardController {
-    private enum Mode: Equatable {
-        case channel
-        case usbReader(slot: Int)
+    struct Attachment: Sendable {
+        let id: UUID
+        let usesChannel: Bool
+        let isCurrent: @MainActor @Sendable () -> Bool
+        let remove: @MainActor @Sendable () async -> Void
+    }
+
+    struct ReaderSnapshot: Sendable {
+        var available = true
+        var readers: [SmartcardReaderInfo] = []
+    }
+
+    struct Environment {
+        var readers: @Sendable () async -> ReaderSnapshot
+        var card: @MainActor (String) throws -> any SmartcardCard & CCIDCard
+        var insert: @Sendable (any SmartcardCard, UUID) async throws -> Attachment
+        var insertUSB: @MainActor (EmulatedCCIDReader, String, UUID) async throws -> Attachment
     }
 
     private(set) var readers: [SmartcardReaderInfo] = []
     private(set) var sharedReader: String?
-    private(set) var isBusy = false
-    /// The reader to share again after a reconnect: kept when the connection drops, cleared
-    /// when the user stops sharing or the card is removed (M8).
     private(set) var restorableReader: String?
+    private(set) var hostAvailable = true
+    private(set) var stopped = false
     var errorMessage: String?
 
-    /// The server offered a smartcard channel.
     private var channelAvailable = false
-    @ObservationIgnored private let session: SpiceSession
+    private var pendingID: UUID?
+    private var releasingID: UUID?
+    @ObservationIgnored private var pendingReader: String?
+    @ObservationIgnored private var pendingUsesChannel = false
+    @ObservationIgnored private var pendingRevoked = false
+    @ObservationIgnored private var attachment: Attachment?
+    @ObservationIgnored private let allowed: Bool
     @ObservationIgnored private let usb: USBController
-    @ObservationIgnored private var mode: Mode?
+    @ObservationIgnored private let events: AsyncStream<SmartcardEvent>
+    @ObservationIgnored private let environment: Environment
+    @ObservationIgnored private var started = false
     @ObservationIgnored private var tasks: [Task<Void, Never>] = []
+    @ObservationIgnored private(set) var worker: Task<Void, Never>?
+    @ObservationIgnored private(set) var releaseWorker: Task<Void, Never>?
 
-    init(session: SpiceSession, usb: USBController) {
-        self.session = session
+    init(session: SpiceSession, usb: USBController, environment: Environment? = nil) {
+        self.allowed = session.smartcardAllowed
         self.usb = usb
+        self.events = session.smartcardEvents
+        self.environment = environment ?? Environment(
+            readers: {
+                await Task.detached {
+                    let available = SmartcardHost.isAvailable
+                    return ReaderSnapshot(available: available, readers: available ? SmartcardHost.readers() : [])
+                }.value
+            },
+            card: { MacSmartcard(readerName: $0) },
+            insert: { card, id in
+                let lease = try await session.insertSmartcardWithLease(card, attachmentID: id)
+                return Attachment(id: lease.id, usesChannel: true, isCurrent: { true }, remove: { await lease.remove() })
+            },
+            insertUSB: { reader, name, id in
+                let lease = try await usb.attachSmartcardReaderWithLease(reader, name: name, attachmentID: id)
+                return Attachment(id: lease.id, usesChannel: false,
+                    isCurrent: { usb.attached[lease.slot]?.id == lease.id },
+                    remove: { await usb.detach(attachmentID: lease.id) })
+            })
     }
 
-    /// A card can be shared through either transport.
-    /// `enable-smartcard=0` in the connection file disables both transports.
-    var isAvailable: Bool { session.smartcardAllowed && (channelAvailable || usb.slotCount > 0) }
+    var isAvailable: Bool { allowed && !stopped && (channelAvailable || usb.slotCount > 0) }
+    var isBusy: Bool { pendingID != nil || releasingID != nil }
+    var canShare: Bool { isAvailable && hostAvailable && !isBusy && (channelAvailable || usb.freeSlots > 0) }
 
-    /// Sharing is possible right now (a transport with room for the card).
-    var canShare: Bool { session.smartcardAllowed && (channelAvailable || usb.freeSlots > 0) }
+    var availabilityNote: String? {
+        if !hostAvailable { return String(localized: "macOS smartcard access is unavailable for this app.") }
+        if readers.isEmpty { return String(localized: "No smartcard readers on this Mac") }
+        return nil
+    }
 
-    /// Short description of the transport for the menu.
     var transportNote: String {
         channelAvailable
             ? String(localized: "Shared through the VM's smartcard reader.")
@@ -51,107 +89,144 @@ final class SmartcardController {
     }
 
     func start() {
-        let events = session.smartcardEvents
+        guard allowed, !started, !stopped else { return }
+        started = true
+        let events = self.events
         tasks.append(Task { [weak self] in
             for await event in events {
-                if case .removed = event, self?.mode == .channel { self?.clearShared() }
+                guard !Task.isCancelled, let self, !self.stopped else { return }
+                self.handle(event)
             }
         })
         tasks.append(Task { [weak self] in
-            // CryptoTokenKit slot changes are polled: cheap, and avoids KVO across actors.
             while !Task.isCancelled {
-                await self?.refresh()
-                try? await Task.sleep(for: .seconds(1))
+                guard let self, !self.stopped else { return }
+                await self.refresh()
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
             }
         })
     }
 
     func stop() {
+        guard !stopped else { return }
+        stopped = true
         for task in tasks { task.cancel() }
         tasks.removeAll()
+        unshare(clearRestorable: false)
     }
 
     func setChannelAvailable(_ available: Bool) {
+        guard !stopped else { return }
         channelAvailable = available
+        if !available, attachment?.usesChannel == true || (pendingID != nil && pendingUsesChannel) {
+            unshare(clearRestorable: false)
+        }
     }
 
-    private func refresh() async {
-        guard isAvailable else { return }
-        let list = await Task.detached { SmartcardHost.readers() }.value
-        if list != readers { readers = list }
-        guard let shared = sharedReader, let mode else { return }
-        // The card was pulled / the key unplugged: take it out of the guest too.
-        if !list.contains(where: { $0.name == shared && $0.hasCard }) {
+    func refresh() async {
+        guard isAvailable, !Task.isCancelled else { return }
+        let snapshot = await environment.readers()
+        guard isAvailable, !Task.isCancelled else { return }
+        hostAvailable = snapshot.available
+        readers = snapshot.available ? snapshot.readers : []
+        if let pendingReader, !readers.contains(where: { $0.name == pendingReader && $0.hasCard }) {
             unshare()
-            return
         }
-        // The USB slot went away (guest rejected the reader, channel closed).
-        if case .usbReader(let slot) = mode, usb.attached[slot] == nil {
-            clearShared()
+        guard let shared = sharedReader, let attachment else { return }
+        if !readers.contains(where: { $0.name == shared && $0.hasCard }) {
+            unshare()
+        } else if !attachment.isCurrent() {
+            // The UUID, not a reused slot number, identifies the emulated reader.
+            unshare(clearRestorable: false)
+        }
+    }
+
+    func handle(_ event: SmartcardEvent) {
+        guard !stopped else { return }
+        guard case .attachmentRemoved(let id) = event else { return }
+        if pendingID == id { pendingRevoked = true }
+        if attachment?.id == id {
+            attachment = nil
+            sharedReader = nil
         }
     }
 
     func toggle(_ reader: SmartcardReaderInfo) {
-        if sharedReader == reader.name {
-            unshare()
-        } else {
-            share(reader)
-        }
+        if sharedReader == reader.name { unshare() } else { share(reader) }
     }
 
     func share(_ reader: SmartcardReaderInfo) {
-        guard sharedReader == nil, !isBusy, canShare else { return }
-        isBusy = true
-        let card = MacSmartcard(readerName: reader.name)
-        let session = self.session
+        guard sharedReader == nil, canShare, reader.hasCard,
+              readers.contains(where: { $0.name == reader.name && $0.hasCard }) else { return }
+        let id = UUID()
         let useChannel = channelAvailable
-        Task {
-            defer { isBusy = false }
+        pendingID = id
+        pendingReader = reader.name
+        pendingUsesChannel = useChannel
+        pendingRevoked = false
+        worker = Task { @MainActor in
+            defer {
+                pendingID = nil
+                pendingReader = nil
+                pendingRevoked = false
+                worker = nil
+            }
+            var card: (any SmartcardCard & CCIDCard)?
+            var emulated: EmulatedCCIDReader?
             do {
+                guard !stopped, !pendingRevoked else { return }
+                let created = try environment.card(reader.name)
+                card = created
+                let lease: Attachment
                 if useChannel {
-                    try await session.insertSmartcard(card)
-                    mode = .channel
+                    lease = try await environment.insert(created, id)
                 } else {
-                    // The reader opens the card when the guest powers it on.
-                    let slot = try await usb.attachSmartcardReader(EmulatedCCIDReader(card: card), name: reader.name)
-                    mode = .usbReader(slot: slot)
+                    let readerDevice = EmulatedCCIDReader(card: created)
+                    emulated = readerDevice
+                    lease = try await environment.insertUSB(readerDevice, reader.name, id)
                 }
+                guard !stopped, !pendingRevoked, lease.id == id, lease.isCurrent() else {
+                    await lease.remove()
+                    return
+                }
+                attachment = lease
                 sharedReader = reader.name
                 restorableReader = reader.name
             } catch {
-                errorMessage = describe(error)
+                if let emulated { await emulated.close() } else { await card?.disconnect() }
+                if !stopped, !pendingRevoked, !(error is CancellationError) { errorMessage = describe(error) }
             }
         }
     }
 
-    func unshare() {
-        restorableReader = nil
-        switch mode {
-        case .channel:
-            let session = self.session
-            Task { await session.removeSmartcard() }
-        case .usbReader(let slot):
-            usb.detach(slot: slot)  // closes the reader, which ends the card session
-            clearShared()
-        case nil:
-            break
+    func unshare() { unshare(clearRestorable: true) }
+
+    private func unshare(clearRestorable: Bool) {
+        if clearRestorable { restorableReader = nil }
+        if pendingID != nil { pendingRevoked = true }
+        guard let current = attachment else { return }
+        attachment = nil
+        sharedReader = nil
+        releasingID = current.id
+        // Removal owns its socket writes; revoking the UI never cancels this task.
+        releaseWorker = Task { @MainActor in
+            await current.remove()
+            if releasingID == current.id {
+                releasingID = nil
+                releaseWorker = nil
+            }
         }
     }
 
-    /// Shares the named reader again once it shows up (reconnect, M8).
     func restore(readerName: String) async {
         for _ in 0..<10 {
+            guard !stopped, !Task.isCancelled else { return }
             if let reader = readers.first(where: { $0.name == readerName && $0.hasCard }) {
                 share(reader)
                 return
             }
-            try? await Task.sleep(for: .milliseconds(500))
+            do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
         }
-    }
-
-    private func clearShared() {
-        mode = nil
-        sharedReader = nil
     }
 
     private func describe(_ error: any Error) -> String {
