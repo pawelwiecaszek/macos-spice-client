@@ -119,7 +119,7 @@ public actor SpiceSession {
     public nonisolated let recordEvents: AsyncStream<RecordEvent>
     /// Clipboard messages from the guest (CLIPBOARD selection only; text already in macOS
     /// form: LF line endings, no trailing NUL).
-    public nonisolated let clipboardEvents: AsyncStream<ClipboardMessage>
+    public nonisolated let clipboardEvents: AsyncStream<AgentClipboardDelivery>
 
     private nonisolated let eventSink: AsyncStream<SessionEvent>.Continuation
     private nonisolated let displaySink: AsyncStream<DisplayEvent>.Continuation
@@ -133,8 +133,9 @@ public actor SpiceSession {
     private var playback: PlaybackChannel?
     private var record: RecordChannel?
     private var audio = AudioSupport()
-    private nonisolated let clipboardSink: AsyncStream<ClipboardMessage>.Continuation
+    private nonisolated let clipboardSink: ClipboardDeliveryBuffer
     var guestAgentCaps = CapabilitySet()
+    var clipboardFailed = false
     private nonisolated let monitorResizeAuthorities = (0..<SpiceSession.maxDisplays).map { _ in MonitorResizeAuthority() }
     private nonisolated let inputSink: AsyncStream<InputEvent>.Continuation
     private let inputQueue: AsyncStream<InputEvent>
@@ -175,7 +176,7 @@ public actor SpiceSession {
         (smartcardEvents, smartcardSink) = AsyncStream.makeStream(bufferingPolicy: .unbounded)
         (playbackEvents, playbackSink) = PlaybackEventBuffer.makeStream()
         (recordEvents, recordSink) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(16))
-        (clipboardEvents, clipboardSink) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(16))
+        (clipboardEvents, clipboardSink) = ClipboardDeliveryBuffer.makeStream()
         usbAllowed = profile.enableUSBRedirection != false
         localUSBFilter = profile.usbFilter
         smartcardAllowed = profile.enableSmartcard != false
@@ -262,7 +263,7 @@ public actor SpiceSession {
                 return
             }
             let (mainEvents, mainSink) = AsyncStream<MainEvent>.makeStream()
-            let main = MainChannel(connection: connection, events: mainSink, clock: clock)
+            let main = MainChannel(connection: connection, events: mainSink, clock: clock, clipboardBuffer: clipboardSink)
             self.main = main
             spawn("main", critical: true, connection: connection) { try await main.run() }
             tasks.append(Task { [weak self] in
@@ -403,70 +404,6 @@ public actor SpiceSession {
         await smartcard?.remove()
     }
 
-    // MARK: Clipboard (vdagent, AGENTS.md M6)
-
-    /// The guest agent supports on-demand clipboard sharing.
-    public var clipboardSupported: Bool { guestAgentCaps.contains(AgentCapability.clipboardByDemand.rawValue) }
-    private var selectionHeader: Bool { guestAgentCaps.contains(AgentCapability.clipboardSelection.rawValue) }
-    private var guestUsesCRLF: Bool { guestAgentCaps.contains(AgentCapability.guestLineEndCRLF.rawValue) }
-
-    /// Tells the guest the Mac clipboard now holds `types` (data follows on request).
-    public func offerClipboard(_ types: [ClipboardDataType]) async {
-        guard clipboardSupported, !types.isEmpty else { return }
-        await sendAgent(ClipboardCodec.grab(types, selectionHeader: selectionHeader))
-    }
-
-    /// Answers a guest request. Text is given in macOS form and converted for the guest.
-    public func provideClipboard(_ type: ClipboardDataType, data: [UInt8]) async {
-        guard clipboardSupported else { return }
-        let payload = type == .utf8Text
-            ? ClipboardCodec.textToGuest(String(decoding: data, as: UTF8.self), guestUsesCRLF: guestUsesCRLF)
-            : data
-        await sendAgent(ClipboardCodec.data(type, bytes: payload, selectionHeader: selectionHeader))
-    }
-
-    /// Asks the guest for the clipboard contents it offered.
-    public func requestClipboard(_ type: ClipboardDataType) async {
-        guard clipboardSupported else { return }
-        await sendAgent(ClipboardCodec.request(type, selectionHeader: selectionHeader))
-    }
-
-    /// Withdraws an earlier offer (the Mac clipboard no longer has shareable data).
-    public func releaseClipboard() async {
-        guard clipboardSupported else { return }
-        await sendAgent(ClipboardCodec.release(selectionHeader: selectionHeader))
-    }
-
-    private func sendAgent(_ message: AgentMessage) async {
-        guard let main else { return }
-        do {
-            try await main.sendToAgent(message)
-        } catch {
-            log.debug("agent send failed: \(error)")
-        }
-    }
-
-    private func handleClipboard(_ message: AgentMessage) {
-        let decoded: ClipboardMessage?
-        do {
-            decoded = try ClipboardCodec.decode(message, selectionHeader: selectionHeader)
-        } catch {
-            log.info("dropping clipboard message: \(error)")
-            return
-        }
-        guard var decoded else { return }
-        switch decoded {
-        case .grab(let selection, _), .request(let selection, _), .release(let selection):
-            guard selection == .clipboard else { return }
-        case .data(let selection, let type, let bytes):
-            guard selection == .clipboard else { return }
-            if type == .utf8Text {
-                decoded = .data(selection: selection, type: type, bytes: Array(ClipboardCodec.textFromGuest(bytes).utf8))
-            }
-        }
-        clipboardSink.yield(decoded)
-    }
-
     /// Current primary surface (e.g. for screenshots).
     public func snapshot() async -> PixelBuffer? {
         await display?.primarySurface()
@@ -486,9 +423,13 @@ public actor SpiceSession {
             await openChannels(list)
         case .mouseMode(let current, _):
             eventSink.yield(.mouseMode(current))
+        case .clipboardUnavailable:
+            clipboardFailed = true
+            eventSink.yield(.clipboardAvailable(false))
         case .agentConnected(let connected):
             if !connected {
                 guestAgentCaps = CapabilitySet()
+                eventSink.yield(.clipboardAvailable(false))
                 failFileTransfers(.agentNotConnected)
             }
             eventSink.yield(.agentConnected(connected))
@@ -499,8 +440,6 @@ public actor SpiceSession {
         case .agentMessage(let message):
             if let status = FileTransferCodec.decodeStatus(message) {
                 fileTransferStatus(id: status.id, result: status.result)
-            } else {
-                handleClipboard(message)
             }
         case .guestName(let name):
             eventSink.yield(.guestName(name))

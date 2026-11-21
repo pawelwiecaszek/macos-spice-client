@@ -160,3 +160,8 @@ status waits, bounded independently owned delivery, fresh agent/policy checks an
 generation-bound app progress. The user accepted normal text/image transfer,
 cancellation, replacement progress and continued VDI connectivity on build `bdbc387`.
 Clipboard and hardware-specific acceptance remain separate.
+
+The next C5 slice implements [clipboard lifetime](CLIPBOARD_LIFECYCLE.md):
+revocable consent, wire-owned agent/negotiation/ownership, serialized replies, bounded
+delivery and image conversion, and independent agent sending. Local regression
+coverage passes; live clipboard acceptance and hardware-specific coverage remain pending.

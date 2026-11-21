@@ -36,4 +36,29 @@ struct ClipboardCodecTests {
         #expect(ClipboardCodec.textToGuest("a\r\nb", guestUsesCRLF: false) == Array("a\nb".utf8))
         #expect(ClipboardCodec.textFromGuest(Array("x\r\ny".utf8) + [0, 0]) == "x\ny")
     }
+
+    @Test func controlLayoutsAreExactAndUnknownTypesStillCountTowardLimit() throws {
+        let unknown = [UInt8](repeating: 0xFF, count: 65 * 4)
+        #expect(throws: WireError.limitExceeded("clipboard types")) {
+            try ClipboardCodec.decode(AgentMessage(type: .clipboardGrab, data: unknown), selectionHeader: false)
+        }
+        #expect(try ClipboardCodec.decode(AgentMessage(type: .clipboardGrab, data: Array(unknown.prefix(64 * 4))),
+                                         selectionHeader: false) == .grab(selection: .clipboard, types: []))
+        #expect(throws: WireError.self) {
+            try ClipboardCodec.decode(AgentMessage(type: .clipboardGrab, data: [1]), selectionHeader: false)
+        }
+        #expect(throws: WireError.self) {
+            try ClipboardCodec.decode(AgentMessage(type: .clipboardRequest, data: [1, 0, 0, 0, 0]), selectionHeader: false)
+        }
+        #expect(throws: WireError.self) {
+            try ClipboardCodec.decode(AgentMessage(type: .clipboardRelease, data: [0]), selectionHeader: false)
+        }
+    }
+
+    @Test func noneAndMatchingEmptyDataAreBothValidFailureReplies() throws {
+        for type in [ClipboardDataType.none, .utf8Text, .png] {
+            #expect(try ClipboardCodec.decode(ClipboardCodec.data(type, bytes: [], selectionHeader: true),
+                                             selectionHeader: true) == .data(selection: .clipboard, type: type, bytes: []))
+        }
+    }
 }

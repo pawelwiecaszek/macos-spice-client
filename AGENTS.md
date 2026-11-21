@@ -422,3 +422,22 @@ Test environments: Proxmox VE VM with QXL or virtio-gpu + `spice-vdagent`; plain
   intact. File queue: 64 ordinary messages, 80 with reserved cleanup, within the
   existing shared byte budget. Include queued file bytes in flow-control pacing.
 - Regression evidence and remaining live checks: docs/FILE_TRANSFER_LIFECYCLE.md.
+
+## C5 clipboard lifetime
+
+- Native clipboard sharing requires an active session and effective opt-in. Revoke
+  queued sharing synchronously on preference changes and on focus/stop/ownership
+  changes. Check pasteboard freshness again after asynchronous image conversion.
+- Agent/negotiation/ownership observations are wire-owned. REQUEST/DATA have no
+  request ID: keep one committed request and one latest deferred offer; release,
+  timeout and capability reannouncement are not response-drain fences. Proven-unsent
+  requests may be cancelled using their local transmission receipt.
+- Clipboard inbox defaults: 16 events/32 MiB queued DATA, finite maximum 64 events/32 MiB.
+  Overflow/malformed controls end clipboard delivery, invalidate queued observations
+  and retain VDI connectivity. Reconnect recovers terminal clipboard failures.
+- Images: 32 MiB encoded, 64 Mi pixels decoded; validate dimensions before decode,
+  require actual PNG from guest, convert off MainActor with one job/controller.
+- All native agent-message admission uses the independent owned sender, including
+  resize and clipboard. Recheck sharing after encoding before first chunk; complete
+  framing after commitment. Clipboard queue max 16 messages within shared byte budget.
+- Tests use isolated named pasteboards. See docs/CLIPBOARD_LIFECYCLE.md.
