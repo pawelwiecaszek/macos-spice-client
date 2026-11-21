@@ -39,6 +39,12 @@ Source anchors are explained in the audit.
 
 ## Final macOS interface acceptance
 
+Maintain the offline application Help with each functional slice when entry
+points, availability, shortcuts, device ownership or recovery behavior changes.
+Keep user instructions in Help and detailed implementation/validation evidence in
+the development documents. Help updates reach the installed application when its
+bundle is replaced; a local source or test-build update does not update `/Applications`.
+
 The user requested a final review against the
 [Apple Human Interface Guidelines](https://developer.apple.com/design/human-interface-guidelines/)
 after the functional phases are complete. This is a planned acceptance gate, not a
