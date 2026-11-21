@@ -223,11 +223,14 @@ Ravada may force power off after its server timeout, so this is not described as
 guaranteed graceful shutdown. The user accepted cancel-with-VDI-preserved,
 confirmed shutdown/stopped-state reporting, and explicit Connect to start/reopen
 with working input on build `a74a32f`. All 445 package tests and 195 hosted tests
-pass; review and the signed Release build pass. Other power actions remain
-portal-only; Phase 6 stays local and C5 stays installed until the phase is ready.
+pass; review and the signed Release build pass. Reboot follows in the next slice
+below; Phase 6 stays local and C5 stays installed until the phase is ready.
 
 The next [Reboot slice](RAVADA_REBOOT.md) shares the bounded confirmation/job flow
 with shutdown, while retaining distinct permission, warning, final-state and result
 messages. It requires explicit can_reboot metadata and reports job completion plus
 a running VM, not verified guest boot. All 446 package and 201 hosted tests pass;
-review and signed Release verification pass. Live reboot acceptance is pending.
+review and signed Release verification pass. The user accepted cancellation
+preserving the VDI and a confirmed guest reboot with working input on build
+`9012513`. Hibernate/resume remain portal-only; their release-specific contracts
+and deployed availability are the next Phase 6 scope. C5 remains installed.

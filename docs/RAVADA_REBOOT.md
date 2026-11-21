@@ -55,9 +55,14 @@ with late results. The Release build passes with Swift compiler warnings treated
 as errors and its signature verifies. Independent review found no outstanding
 issues. Offline Help is updated.
 
-No live reboot has been performed. First cancel reboot confirmation and verify the
-existing VDI remains usable. Then explicitly confirm a reboot after saving work;
-verify the guest actually restarts and input works afterwards. A viewer disconnect
-is not required. The result message reports request completion/running state only.
-If guest reboot is uncertain, check the portal and guest before another request.
-The accepted shutdown slice stays local, and C5 remains installed.
+The user accepted both requested live checks on build `9012513`: cancelling reboot
+confirmation preserved the connected/usable VDI, and explicitly confirming reboot
+restarted the guest with working input afterwards. This is user-reported functional
+acceptance on the tested Ravada 2.4.6 deployment, not an instrumented boot trace or
+validation of every guest/backend/permission role.
+
+A viewer disconnect is not required. The app's result message still reports only
+request completion/running state; this live result does not justify claiming guest
+boot verification from metadata alone. If a future reboot is uncertain, check the
+portal and guest before another request. Reboot and shutdown stay local while
+remaining Phase 6 actions are developed; C5 remains installed.
