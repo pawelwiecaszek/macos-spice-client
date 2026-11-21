@@ -240,6 +240,10 @@ bounded flow for verified KVM metadata. Resume uses Start for a known managed sa
 state, not the paused-VM Resume route, and cannot start an ordinary stopped desktop.
 Confirmation and Help warn that Ravada may discard saved memory and cold-start on
 restore failure; running state is not memory-restoration proof. All 448 package
-and 207 hosted tests pass; review and signed Release verification pass. Live
-saved-state acceptance is pending. Paused-VM Resume and other backends stay in the
-portal; Phase 6 remains local and installed C5 is unchanged.
+and 207 hosted tests pass; review and signed Release verification pass. The user
+accepted Hibernate/Resume Cancel paths, confirmed Hibernate, and explicit Resume
+plus viewer Reconnect with the unsaved marker preserved and working input on build
+`6871dea`. This completes functional Phase 6 acceptance on the tested deployment.
+Paused-VM Resume, force/reset and other backends remain in the portal; live denied
+roles, cold-start fallback and broader deployment coverage remain unverified.
+Installation and the dependent draft PR follow this acceptance checkpoint.

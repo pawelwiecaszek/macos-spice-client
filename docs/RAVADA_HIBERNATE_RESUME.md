@@ -61,9 +61,14 @@ and stale confirmations. Shutdown/Reboot regressions still pass. The Release bui
 passes with Swift warnings treated as errors and its signature verifies.
 Independent review found no outstanding issues. Offline Help is updated.
 
-No live Hibernate/Resume has been performed. Save real work, then test Cancel first.
-For positive acceptance, create a disposable unsaved marker in the guest, explicitly
-hibernate, cancel Resume once, then explicitly Resume and reconnect. Verify the
-marker survived and input works; a running VM alone does not prove saved memory
-restored. Record unsupported/denied server behavior rather than bypassing it.
-Shutdown and Reboot remain locally accepted; C5 remains installed.
+The user accepted all requested live steps on build `6871dea`: Hibernate Cancel
+preserved the VDI; confirmed Hibernate ended it and reported hibernated state;
+Resume Cancel left the desktop not running; explicit Resume followed by viewer
+Reconnect preserved the disposable unsaved marker and working input. This accepts
+the tested Ravada 2.4.6 KVM deployment. The observation is user-reported, not an
+instrumented memory-integrity trace or validation of other roles/backends.
+
+The cold-start fallback was not exercised, and its confirmation/Help warning stays
+in place. Neither a successful job nor running metadata proves memory restored on
+future attempts. Shutdown/Reboot acceptance remains recorded separately. The final
+Phase 6 release checkpoint follows in the development roadmap.
