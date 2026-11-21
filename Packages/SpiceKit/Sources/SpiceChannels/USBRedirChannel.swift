@@ -15,6 +15,8 @@ public enum USBDetachReason: Sendable, Equatable {
 public enum USBSlotEvent: Sendable, Equatable {
     case attached(slot: Int, name: String)
     case detached(slot: Int, reason: USBDetachReason)
+    /// Identifies the attachment that ended, even if the slot has since been reused.
+    case attachmentEnded(slot: Int, attachmentID: UUID, reason: USBDetachReason)
 }
 
 public enum USBAttachError: Error, Equatable, Sendable {
@@ -41,6 +43,7 @@ public actor USBRedirChannel {
     private var codec = USBRedirCodec()
     private var guestHelloReceived = false
     private var helloWaiters: [CheckedContinuation<Bool, Never>] = []
+    private var helloWaiterID: UUID?
     private var guestFilter: USBFilter?
 
     private var device: (any USBRedirDevice)?
@@ -53,11 +56,17 @@ public actor USBRedirChannel {
     private var inFlight: [UInt64: (endpoint: UInt8, bytes: Int)] = [:]
     private var outstandingBytes = 0
     private var attaching = false
+    private var detaching = false
+    private var attachmentID: UUID?
+    private var disconnectTask: (id: UUID, task: Task<Void, Never>)?
+    private var cleanupID: UUID?
+    private var cleanupWaiters: [CheckedContinuation<Void, Never>] = []
     private var interruptPollerTokens: [UInt8: UUID] = [:]
     private var closed = false
     /// Endpoint address → transfer type of the attached device's current configuration.
     private var endpointTypes: [UInt8: USBTransferType] = [:]
     private var disconnectAckWaiter: CheckedContinuation<Void, Never>?
+    private var disconnectAckID: UUID?
 
     public init(slot: Int, connection: ChannelConnection, events: AsyncStream<USBSlotEvent>.Continuation) {
         self.slot = slot
@@ -66,7 +75,7 @@ public actor USBRedirChannel {
         self.log = ChannelLogger(category: "usbredir")
     }
 
-    public var isFree: Bool { device == nil && !attaching && !closed }
+    public var isFree: Bool { device == nil && !attaching && !detaching && !closed }
     public var attachedName: String? { device == nil ? nil : deviceName }
 
     // MARK: Channel loop
@@ -83,6 +92,7 @@ public actor USBRedirChannel {
         } catch {
             // Any exit (EOF, transport error, bad data) releases the device right away,
             // not only at session teardown.
+            closed = true
             await detachLocally(.channelClosed)
             await connection.close()
             throw error
@@ -92,6 +102,7 @@ public actor USBRedirChannel {
     private func receiveLoop() async throws {
         try await sendRaw(codec.encodeHello())
         while true {
+            await connection.messageHandled()
             let message = try await connection.nextMessage()
             let bytes: [UInt8]
             switch SpiceVMCMessage(rawValue: message.type) {
@@ -115,6 +126,7 @@ public actor USBRedirChannel {
 
     public func close() async {
         closed = true
+        expireHelloWaiters()
         await detachLocally(.channelClosed)
         await connection.close()
     }
@@ -147,135 +159,240 @@ public actor USBRedirChannel {
     /// Devices with a HID boot keyboard/mouse interface (including security keys such as
     /// YubiKeys, which type one-time passwords) are refused unless the user confirmed
     /// (`allowInputDevice`), so a keyboard or mouse is never taken from the Mac by accident.
-    public func attach(_ newDevice: any USBRedirDevice, allowInputDevice: Bool = false) async throws {
+    public func attach(_ newDevice: any USBRedirDevice, allowInputDevice: Bool = false,
+                       attachmentID: UUID = UUID()) async throws {
+        try Task.checkCancellation()
         // Reserve the slot before the first suspension point (actor reentrancy): a second
         // attach sees it busy, and close() during the awaits is detected afterwards.
-        guard device == nil, !attaching, !closed else { throw USBAttachError.slotBusy }
+        guard device == nil, !attaching, !detaching, !closed else { throw USBAttachError.slotBusy }
         attaching = true
         defer { attaching = false }
         if !guestHelloReceived {
             // The guest side (QEMU usb-redir) greets us when the slot opens; don't wait forever.
+            let waiterID = UUID()
+            helloWaiterID = waiterID
             let timeout = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(10))
-                await self?.expireHelloWaiters()
+                do { try await Task.sleep(for: .seconds(10)) } catch { return }
+                guard !Task.isCancelled else { return }
+                await self?.expireHelloWaiters(ifID: waiterID)
             }
             let ready = await withCheckedContinuation { helloWaiters.append($0) }
             timeout.cancel()
             guard ready else { throw USBAttachError.guestNotReady }
         }
+        try Task.checkCancellation()
         let description = await newDevice.describe()
+        try Task.checkCancellation()
         if description.isBootKeyboardOrMouse, !allowInputDevice { throw USBAttachError.keyboardOrMouse }
         if let guestFilter, !guestFilter.allows(description.filterDevice) { throw USBAttachError.rejectedByGuestFilter }
         guard !closed else { throw USBAttachError.guestNotReady }  // channel went away meanwhile
         device = newDevice
+        self.attachmentID = attachmentID
         deviceName = newDevice.displayName
         rememberEndpoints(description)
         cancelledIDs.removeAll()
         // Order required by the protocol: ep_info, interface_info, then device_connect.
-        await send(codec.encodeEndpointInfo(description.endpoints))
-        await send(codec.encodeInterfaceInfo(description.interfaces))
-        await send(codec.encodeDeviceConnect(description))
+        do {
+            try await sendRaw(codec.encodeEndpointInfo(description.endpoints))
+            try checkAttachment(attachmentID)
+            try await sendRaw(codec.encodeInterfaceInfo(description.interfaces))
+            try checkAttachment(attachmentID)
+            try await sendRaw(codec.encodeDeviceConnect(description))
+            try checkAttachment(attachmentID)
+        } catch {
+            // A partial attach cannot be retried on the same wire stream safely.
+            if self.attachmentID == attachmentID {
+                closed = true
+                await detachLocally(.channelClosed)
+                await connection.close()
+            }
+            await waitForCleanup(attachmentID: attachmentID)
+            throw error
+        }
         events.yield(.attached(slot: slot, name: deviceName))
         log.info("slot \(slot): attached device (class \(description.deviceClass))")
     }
 
     /// Removes the device from the guest and releases it.
     public func detach() async {
-        guard let detaching = device else { return }
-        await send(codec.encodeDeviceDisconnect())
+        guard let attachmentID = attachmentID ?? cleanupID else { return }
+        await detach(attachmentID: attachmentID)
+    }
+
+    /// Removes only this attachment; stale owners cannot detach a replacement device.
+    public func detach(attachmentID: UUID) async {
+        if let disconnectTask, disconnectTask.id == attachmentID {
+            await disconnectTask.task.value
+            return
+        }
+        if cleanupID == attachmentID {
+            await withCheckedContinuation { cleanupWaiters.append($0) }
+            return
+        }
+        guard self.attachmentID == attachmentID, device != nil else { return }
+        let task = Task { await self.performDetach(attachmentID: attachmentID) }
+        disconnectTask = (attachmentID, task)
+        await task.value
+        if disconnectTask?.id == attachmentID { disconnectTask = nil }
+    }
+
+    private func performDetach(attachmentID: UUID) async {
+        do {
+            try await sendRaw(codec.encodeDeviceDisconnect())
+        } catch {
+            closed = true
+            await detachLocally(.channelClosed)
+            await connection.close()
+            return
+        }
+        guard self.attachmentID == attachmentID else {
+            await waitForCleanup(attachmentID: attachmentID)
+            return
+        }
         if codec.negotiated(.deviceDisconnectAck) {
             // Wait (briefly) until the guest has stopped using the old device. The ack, the
             // timer, channel shutdown and detachLocally all resolve the same single waiter.
+            let waiterID = UUID()
             let timer = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(2))
-                await self?.resumeDisconnectAck()
+                do { try await Task.sleep(for: .seconds(2)) } catch { return }
+                guard !Task.isCancelled else { return }
+                await self?.resumeDisconnectAck(ifID: waiterID)
             }
-            await waitForDisconnectAck()
+            await waitForDisconnectAck(id: waiterID)
             timer.cancel()
             // While we waited the guest may have rejected it and another device been attached.
-            guard device === detaching else { return }
+        }
+        guard self.attachmentID == attachmentID else {
+            await waitForCleanup(attachmentID: attachmentID)
+            return
         }
         await detachLocally(.userRequest)
     }
 
-    private func expireHelloWaiters() {
+    private func waitForCleanup(attachmentID: UUID) async {
+        if cleanupID == attachmentID {
+            await withCheckedContinuation { cleanupWaiters.append($0) }
+        }
+    }
+
+    private func checkAttachment(_ id: UUID) throws {
+        guard !closed, attachmentID == id, device != nil else { throw USBAttachError.guestNotReady }
+    }
+
+    private func expireHelloWaiters(ifID: UUID? = nil) {
+        if let ifID, helloWaiterID != ifID { return }
+        helloWaiterID = nil
         for waiter in helloWaiters { waiter.resume(returning: false) }
         helloWaiters.removeAll()
     }
 
-    private func waitForDisconnectAck() async {
+    private func waitForDisconnectAck(id: UUID) async {
         await withCheckedContinuation { continuation in
             if device == nil || disconnectAckWaiter != nil {
                 continuation.resume()  // nothing to wait for, or another detach is already waiting
             } else {
+                disconnectAckID = id
                 disconnectAckWaiter = continuation
             }
         }
     }
 
-    private func resumeDisconnectAck() {
+    private func resumeDisconnectAck(ifID: UUID? = nil) {
+        if let ifID, disconnectAckID != ifID { return }
         disconnectAckWaiter?.resume()
         disconnectAckWaiter = nil
+        disconnectAckID = nil
     }
 
     private func detachLocally(_ reason: USBDetachReason) async {
-        guard let current = device else { return }
+        guard let current = device, let attachmentID else {
+            if cleanupID != nil { await withCheckedContinuation { cleanupWaiters.append($0) } }
+            return
+        }
+        detaching = true
+        cleanupID = attachmentID
+        defer {
+            detaching = false
+            cleanupID = nil
+            let waiters = cleanupWaiters
+            cleanupWaiters.removeAll()
+            for waiter in waiters { waiter.resume() }
+        }
         device = nil
+        self.attachmentID = nil
         resumeDisconnectAck()
         endpointTypes.removeAll()
         outstandingBytes = 0
-        for poller in interruptPollers.values { poller.cancel() }
-        for endpoint in interruptPollers.keys { await current.abort(endpoint: endpoint) }
+        let interruptEndpoints = Array(interruptPollers.keys)
         interruptPollers.removeAll()
         interruptPollerTokens.removeAll()
         for queue in endpointQueues.values { queue.finish() }
         endpointQueues.removeAll()
-        for task in queueTasks { task.cancel() }
+        // Finishing queues and retiring ownership stops future work. Cancelling a job
+        // already sending a reply would cancel NetworkByteStream's reusable socket.
         queueTasks.removeAll()
         inFlight.removeAll()
+        for endpoint in interruptEndpoints { await current.abort(endpoint: endpoint) }
         await current.close()
         events.yield(.detached(slot: slot, reason: reason))
+        events.yield(.attachmentEnded(slot: slot, attachmentID: attachmentID, reason: reason))
         log.info("slot \(slot): detached (\(reason))")
     }
 
     // MARK: Packet handling
 
     private func handle(_ packet: USBRedirIncoming) async {
+        let packetAttachmentID = attachmentID
         switch packet {
         case .hello(let version, _):
             log.sensitive("slot \(slot): guest hello", ChannelLogger.sanitize(version, limit: 64))
             guestHelloReceived = true
+            helloWaiterID = nil
             for waiter in helloWaiters { waiter.resume(returning: true) }
             helloWaiters.removeAll()
         case .filterFilter(let text):
             guestFilter = try? USBFilter(parsing: text)
         case .filterReject:
+            guard let packetAttachmentID else { return }
             await send(codec.encodeDeviceDisconnect())
+            guard attachmentID == packetAttachmentID else { return }
             await detachLocally(.guestRejected)
         case .deviceDisconnectAck:
             resumeDisconnectAck()
         case .reset:
             guard let device else { return }
             if !(await device.reset()) {
+                guard attachmentID == packetAttachmentID, self.device === device else { return }
                 await send(codec.encodeDeviceDisconnect())
+                guard attachmentID == packetAttachmentID else { return }
                 await detachLocally(.deviceGone)
             }
         case .setConfiguration(let id, let value):
             guard let device else { return await send(codec.encodeConfigurationStatus(id: id, status: .ioerror, configuration: 0)) }
             let status = await device.setConfiguration(value)
+            guard attachmentID == packetAttachmentID, self.device === device else { return }
             if status == .success { await sendDescriptionUpdate(device) }
-            await send(codec.encodeConfigurationStatus(id: id, status: status, configuration: await device.configuration()))
+            let configuration = await device.configuration()
+            guard attachmentID == packetAttachmentID, self.device === device else { return }
+            await send(codec.encodeConfigurationStatus(id: id, status: status, configuration: configuration))
         case .getConfiguration(let id):
             guard let device else { return await send(codec.encodeConfigurationStatus(id: id, status: .ioerror, configuration: 0)) }
-            await send(codec.encodeConfigurationStatus(id: id, status: .success, configuration: await device.configuration()))
+            let configuration = await device.configuration()
+            guard attachmentID == packetAttachmentID, self.device === device else { return }
+            await send(codec.encodeConfigurationStatus(id: id, status: .success, configuration: configuration))
         case .setAltSetting(let id, let interface, let alt):
             guard let device else { return await send(codec.encodeAltSettingStatus(id: id, status: .ioerror, interface: interface, alt: 0)) }
             let status = await device.setAltSetting(interface: interface, alt: alt)
+            guard attachmentID == packetAttachmentID, self.device === device else { return }
             if status == .success { await sendDescriptionUpdate(device) }
             let current = await device.altSetting(interface: interface) ?? 0
+            guard attachmentID == packetAttachmentID, self.device === device else { return }
             await send(codec.encodeAltSettingStatus(id: id, status: status, interface: interface, alt: current))
         case .getAltSetting(let id, let interface):
-            guard let device, let alt = await device.altSetting(interface: interface) else {
+            guard let device else { return }
+            let value = await device.altSetting(interface: interface)
+            guard attachmentID == packetAttachmentID, self.device === device else { return }
+            guard let alt = value else {
                 return await send(codec.encodeAltSettingStatus(id: id, status: .inval, interface: interface, alt: 0))
             }
             await send(codec.encodeAltSettingStatus(id: id, status: .success, interface: interface, alt: alt))
@@ -285,10 +402,11 @@ public actor USBRedirChannel {
         case .startInterruptReceiving(let id, let endpoint):
             await startInterruptReceiving(id: id, endpoint: endpoint)
         case .stopInterruptReceiving(let id, let endpoint):
-            // Cancelling the task alone doesn't end a suspended device request: abort it too.
-            interruptPollers.removeValue(forKey: endpoint)?.cancel()
+            // Retire the poller without cancelling a possible in-progress wire send.
+            interruptPollers[endpoint] = nil
             interruptPollerTokens[endpoint] = nil
             if let device { await device.abort(endpoint: endpoint) }
+            guard attachmentID == packetAttachmentID else { return }
             await send(codec.encodeInterruptReceivingStatus(id: id, status: .success, endpoint: endpoint))
         case .allocBulkStreams(let id, let endpoints, _), .freeBulkStreams(let id, let endpoints):
             await send(codec.encodeBulkStreamsStatus(id: id, status: .inval, endpoints: endpoints, streams: 0))
@@ -306,9 +424,9 @@ public actor USBRedirChannel {
                 return await send(codec.encodeControlReply(id: id, endpoint: endpoint, setup: setup, status: .inval,
                                                            actualLength: 0, data: []))
             }
-            enqueue(endpoint: 0, id: id, bytes: bytes) { channel, device in
+            enqueue(endpoint: 0, id: id, bytes: bytes) { channel, device, attachmentID in
                 let result = await device.control(setup: setup, data: data)
-                await channel.complete(id: id) { codec, status in
+                await channel.complete(id: id, attachmentID: attachmentID) { codec, status in
                     codec.encodeControlReply(id: id, endpoint: endpoint, setup: setup, status: status ?? result.status,
                                              actualLength: status == nil ? result.actualLength : 0, data: result.data)
                 }
@@ -321,10 +439,10 @@ public actor USBRedirChannel {
                 return await send(codec.encodeBulkReply(id: id, endpoint: header.endpoint, streamID: header.streamID,
                                                         status: .inval, actualLength: 0, data: []))
             }
-            enqueue(endpoint: header.endpoint, id: id, bytes: bytes) { channel, device in
+            enqueue(endpoint: header.endpoint, id: id, bytes: bytes) { channel, device, attachmentID in
                 let result = await device.bulk(endpoint: header.endpoint, data: isIn ? [] : data,
                                                length: isIn ? Int(header.length) : data.count)
-                await channel.complete(id: id) { codec, status in
+                await channel.complete(id: id, attachmentID: attachmentID) { codec, status in
                     codec.encodeBulkReply(id: id, endpoint: header.endpoint, streamID: header.streamID,
                                           status: status ?? result.status,
                                           actualLength: status == nil ? result.actualLength : 0, data: result.data)
@@ -336,9 +454,9 @@ public actor USBRedirChannel {
                 return await send(codec.encodeInterrupt(id: id, endpoint: header.endpoint, status: .inval,
                                                         actualLength: 0, data: []))
             }
-            enqueue(endpoint: header.endpoint, id: id, bytes: data.count) { channel, device in
+            enqueue(endpoint: header.endpoint, id: id, bytes: data.count) { channel, device, attachmentID in
                 let result = await device.interrupt(endpoint: header.endpoint, data: data, length: data.count)
-                await channel.complete(id: id) { codec, status in
+                await channel.complete(id: id, attachmentID: attachmentID) { codec, status in
                     codec.encodeInterrupt(id: id, endpoint: header.endpoint, status: status ?? result.status,
                                           actualLength: status == nil ? result.actualLength : 0, data: [])
                 }
@@ -351,9 +469,12 @@ public actor USBRedirChannel {
     }
 
     private func sendDescriptionUpdate(_ device: any USBRedirDevice) async {
+        let attachmentID = self.attachmentID
         let description = await device.describe()
+        guard self.attachmentID == attachmentID, self.device === device else { return }
         rememberEndpoints(description)
         await send(codec.encodeEndpointInfo(description.endpoints))
+        guard self.attachmentID == attachmentID, self.device === device else { return }
         await send(codec.encodeInterfaceInfo(description.interfaces))
     }
 
@@ -376,8 +497,8 @@ public actor USBRedirChannel {
 
     /// Runs transfers for one endpoint strictly in order; endpoints run concurrently.
     private func enqueue(endpoint: UInt8, id: UInt64, bytes: Int,
-                         _ work: @escaping @Sendable (USBRedirChannel, any USBRedirDevice) async -> Void) {
-        guard let device else {
+                         _ work: @escaping @Sendable (USBRedirChannel, any USBRedirDevice, UUID) async -> Void) {
+        guard let device, let attachmentID else {
             // No device: fail immediately with the matching packet type.
             outstandingBytes -= bytes
             failWithoutDevice(id: id)
@@ -395,7 +516,8 @@ public actor USBRedirChannel {
         }
         queue.yield { [weak self] in
             guard let self else { return }
-            await work(self, device)
+            guard await self.isCurrentAttachment(attachmentID) else { return }
+            await work(self, device, attachmentID)
         }
     }
 
@@ -404,7 +526,9 @@ public actor USBRedirChannel {
     }
 
     /// Sends the reply for a finished data packet (as `.cancelled` if it was cancelled).
-    private func complete(id: UInt64, _ build: @Sendable (USBRedirCodec, USBRedirStatus?) -> [UInt8]) async {
+    private func complete(id: UInt64, attachmentID: UUID,
+                          _ build: @Sendable (USBRedirCodec, USBRedirStatus?) -> [UInt8]) async {
+        guard self.attachmentID == attachmentID else { return }
         if let entry = inFlight.removeValue(forKey: id) {
             outstandingBytes = max(0, outstandingBytes - entry.bytes)
         }
@@ -413,7 +537,10 @@ public actor USBRedirChannel {
         await send(build(codec, override))
     }
 
+    private func isCurrentAttachment(_ id: UUID) -> Bool { attachmentID == id && device != nil }
+
     private func startInterruptReceiving(id: UInt64, endpoint: UInt8) async {
+        let attachmentID = self.attachmentID
         guard let device, endpoint & 0x80 != 0, endpointTypes[endpoint] == .interrupt else {
             return await send(codec.encodeInterruptReceivingStatus(id: id, status: .inval, endpoint: endpoint))
         }
@@ -424,7 +551,7 @@ public actor USBRedirChannel {
         }
         let description = await device.describe()
         let maxPacket = Int(description.endpoints.first { $0.address == endpoint }?.maxPacketSize ?? 64)
-        guard interruptPollers[endpoint] == nil, self.device === device else {
+        guard interruptPollers[endpoint] == nil, self.attachmentID == attachmentID, self.device === device else {
             return await send(codec.encodeInterruptReceivingStatus(id: id, status: .success, endpoint: endpoint))
         }
         interruptPacketID[endpoint] = 0
@@ -441,6 +568,7 @@ public actor USBRedirChannel {
         while !Task.isCancelled {
             let result = await device.interrupt(endpoint: endpoint, data: [], length: maxPacket)
             if Task.isCancelled || result.status == .cancelled { return }
+            guard interruptPollerTokens[endpoint] == token else { return }
             await deliverInterrupt(endpoint: endpoint, result: result)
             if result.status != .success { return }
         }

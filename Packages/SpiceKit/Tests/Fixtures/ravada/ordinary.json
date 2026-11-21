@@ -1,0 +1,1 @@
+[{"id":10,"name":"Example Desktop","alias":"Example Desktop","is_base":1,"is_public":1,"id_clone":null,"name_clone":null,"list_clones":[{"id":42,"name":"example-clone","alias":"My Desktop","is_active":1,"is_locked":"","can_hibernate":1,"can_shutdown":1,"can_remove":0,"screenshot":null,"future_field":true}]},{"id":99,"name":"Standalone","is_base":0,"is_active":0,"list_clones":[]}]

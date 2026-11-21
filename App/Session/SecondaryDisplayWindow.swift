@@ -1,13 +1,14 @@
 import AppKit
 import SpiceKit
 
-/// A window for an additional guest monitor (SPICE display channel 1…3). Input typed or
-/// clicked here goes to the same session; pointer positions carry this display's id.
+/// A window for an additional guest head or display channel. Pointer positions
+/// carry the independently validated guest input selector.
 @MainActor
 final class SecondaryDisplayWindow: NSObject, NSWindowDelegate, RemoteDisplayViewDelegate {
     let display: UInt8
     let view: RemoteDisplayView
     let window: NSWindow
+    private(set) var wasClosed = false
     private weak var owner: SessionController?
 
     init?(display: UInt8, owner: SessionController, title: String, settings: AppSettings) {
@@ -30,13 +31,18 @@ final class SecondaryDisplayWindow: NSObject, NSWindowDelegate, RemoteDisplayVie
         window.delegate = self
     }
 
-    func show(width: Int, height: Int) {
-        view.renderer.createSurface(width: width, height: height)
-        if !window.isVisible {
-            window.setContentSize(NSSize(width: width, height: height))
-            window.center()
-            window.orderFront(nil)
+    /// Shares its channel's upload texture; the head owns only presentation state.
+    func showHead(width: Int, height: Int, retina: Bool) {
+        guard !window.isVisible else { return }
+        let scale = retina ? (window.screen?.backingScaleFactor ?? 2) : 1
+        var size = NSSize(width: CGFloat(width) / scale, height: CGFloat(height) / scale)
+        if let screen = (window.screen ?? NSScreen.main)?.visibleFrame.size {
+            let fit = min(1, min(screen.width / size.width, max(1, screen.height - 60) / size.height))
+            size.width *= fit; size.height *= fit
         }
+        window.setContentSize(size)
+        window.center()
+        window.orderFront(nil)
     }
 
     func close() {
@@ -66,6 +72,7 @@ final class SecondaryDisplayWindow: NSObject, NSWindowDelegate, RemoteDisplayVie
     // MARK: NSWindowDelegate
 
     func windowWillClose(_ notification: Notification) {
+        wasClosed = true
         view.stop()
     }
 }

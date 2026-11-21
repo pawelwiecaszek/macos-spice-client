@@ -5,6 +5,66 @@ import SpiceWire
 
 @Suite("Audio channels", .timeLimit(.minutes(1)))
 struct AudioChannelTests {
+    @Test func recordCapabilitiesDoNotClaimUnimplementedCaptureVolume() {
+        #expect(!RecordChannel.capabilities(opus: false).contains(RecordCapability.volume.rawValue))
+        #expect(!RecordChannel.capabilities(opus: false).contains(RecordCapability.opus.rawValue))
+        #expect(RecordChannel.capabilities(opus: true).contains(RecordCapability.opus.rawValue))
+        #expect(PlaybackChannel.capabilities(opus: false).contains(PlaybackCapability.latency.rawValue))
+    }
+
+    @Test func recordControlOverflowTerminatesInsteadOfLosingStopSilently() async throws {
+        let (connection, server) = await pair(.record)
+        let (events, sink) = AsyncStream<RecordEvent>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let channel = RecordChannel(connection: connection, events: sink)
+        let loop = Task { try await channel.run() }
+        var start = ByteWriter(); start.writeU32(1); start.writeU16(1); start.writeU32(48000)
+        try await server.send(RecordServerMessage.start.rawValue, start.bytes)
+        try await server.send(RecordServerMessage.stop.rawValue, [])
+        do { try await loop.value; Issue.record("Record delivery overflow must end the channel") }
+        catch is RecordDeliveryFailure { }
+        catch { Issue.record("Unexpected record failure: \(error)") }
+        #expect(await channel.isActive == false)
+        var iterator = events.makeAsyncIterator()
+        while await iterator.next() != nil { }
+        await channel.close()
+    }
+
+    @Test func playbackDeliveryOverflowEscapesAsALimitFailure() async throws {
+        let (connection, server) = await pair(.playback)
+        let buffer = try #require(PlaybackEventBuffer(maxEvents: 4, maxControls: 1, maxAudioBytes: 100))
+        let channel = PlaybackChannel(connection: connection, events: buffer)
+        let loop = Task { try await channel.run() }
+        try await server.send(PlaybackServerMessage.mute.rawValue, [1])
+        try await server.send(PlaybackServerMessage.mute.rawValue, [0])
+        do {
+            try await loop.value
+            Issue.record("Playback must report the delivery limit")
+        } catch let failure as PlaybackDeliveryFailure {
+            #expect(failure == .controlLimit)
+        } catch { Issue.record("Unexpected playback failure: \(error)") }
+        #expect(buffer.failure == .controlLimit)
+        var iterator = buffer.stream().makeAsyncIterator()
+        #expect(await iterator.next() == .stop)
+        #expect(await iterator.next() == nil)
+        await channel.close()
+    }
+
+    @Test func intentionalPlaybackDeliveryCloseRemainsCancellation() async throws {
+        let (connection, server) = await pair(.playback)
+        let buffer = PlaybackEventBuffer()
+        buffer.finish()
+        let channel = PlaybackChannel(connection: connection, events: buffer)
+        let loop = Task { try await channel.run() }
+        try await server.send(PlaybackServerMessage.mute.rawValue, [1])
+        do {
+            try await loop.value
+            Issue.record("Closed delivery must end playback")
+        } catch is CancellationError { }
+        catch { Issue.record("Intentional close must not become a limit failure: \(error)") }
+        #expect(buffer.failure == nil)
+        await channel.close()
+    }
+
     private func pair(_ type: ChannelType) async -> (ChannelConnection, ServerChannel) {
         let (client, server) = await MemoryByteStream.pair()
         return (ChannelConnection(type: type, id: 0, stream: client, serverCaps: CapabilitySet(bits: [])),
@@ -13,7 +73,7 @@ struct AudioChannelTests {
 
     @Test func playbackStartModeDataVolume() async throws {
         let (connection, server) = await pair(.playback)
-        let (events, sink) = AsyncStream<PlaybackEvent>.makeStream()
+        let (events, sink) = PlaybackEventBuffer.makeStream()
         let channel = PlaybackChannel(connection: connection, events: sink)
         let loop = Task { try await channel.run() }
         var it = events.makeAsyncIterator()
@@ -21,7 +81,7 @@ struct AudioChannelTests {
         var start = ByteWriter()
         start.writeU32(2); start.writeU16(1); start.writeU32(48_000); start.writeU32(1234)
         try await server.send(PlaybackServerMessage.start.rawValue, start.bytes)
-        #expect(await it.next() == .start(channels: 2, frequency: 48_000))
+        #expect(await it.next() == .start(channels: 2, frequency: 48_000, time: 1234))
 
         var mode = ByteWriter(); mode.writeU32(5); mode.writeU16(AudioDataMode.opus.rawValue)
         try await server.send(PlaybackServerMessage.mode.rawValue, mode.bytes)
@@ -65,6 +125,29 @@ struct AudioChannelTests {
         let data = try await server.receive()
         #expect(data.type == RecordClientMessage.data.rawValue && data.payload == [100, 0, 0, 0, 9, 8, 7, 6])
         #expect(try await server.receive().payload == [110, 0, 0, 0, 5, 4])
+        loop.cancel()
+        await channel.close()
+    }
+
+    @Test func playbackMinimumBufferRequestsRetainOrderAndUnsignedBounds() async throws {
+        #expect(PlaybackChannel.capabilities(opus: false).contains(PlaybackCapability.latency.rawValue))
+        let (connection, server) = await pair(.playback)
+        let (events, sink) = PlaybackEventBuffer.makeStream()
+        let channel = PlaybackChannel(connection: connection, events: sink)
+        let loop = Task { try await channel.run() }
+        var iterator = events.makeAsyncIterator()
+        var latency = ByteWriter(); latency.writeU32(400)
+        try await server.send(PlaybackServerMessage.latency.rawValue, latency.bytes)
+        #expect(await iterator.next() == .latency(milliseconds: 400))
+        var start = ByteWriter()
+        start.writeU32(2); start.writeU16(1); start.writeU32(48_000); start.writeU32(1234)
+        try await server.send(PlaybackServerMessage.start.rawValue, start.bytes)
+        #expect(await iterator.next() == .start(channels: 2, frequency: 48_000, time: 1234))
+        latency = ByteWriter(); latency.writeU32(.max)
+        try await server.send(PlaybackServerMessage.latency.rawValue, latency.bytes)
+        #expect(await iterator.next() == .latency(milliseconds: .max))
+        try await server.send(PlaybackServerMessage.stop.rawValue, [])
+        #expect(await iterator.next() == .stop)
         loop.cancel()
         await channel.close()
     }

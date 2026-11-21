@@ -16,6 +16,7 @@ public final class MicrophoneCapture: @unchecked Sendable {
     // thread and only touches its own `CaptureState`.
     private let engine = AVAudioEngine()
     private var running = false
+    private var tapInstalled = false
 
     public init() {}
 
@@ -28,7 +29,9 @@ public final class MicrophoneCapture: @unchecked Sendable {
     public func start(channels: Int, sampleRate: Int, useOpus: Bool,
                       deliver: @escaping @Sendable (Output) -> Void) throws {
         stop()
-        let channels = max(1, min(channels, 2))
+        guard (1...2).contains(channels), (8_000...192_000).contains(sampleRate) else {
+            throw CaptureError.unsupportedFormat
+        }
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
         guard inputFormat.sampleRate > 0,
@@ -59,22 +62,25 @@ public final class MicrophoneCapture: @unchecked Sendable {
                 }
             }
         }
+        tapInstalled = true
         engine.prepare()
-        try engine.start()
+        do { try engine.start() } catch { stop(); throw error }
         running = true
     }
 
     public func stop() {
-        guard running else { return }
-        engine.inputNode.removeTap(onBus: 0)
+        guard running || tapInstalled else { return }
+        if tapInstalled { engine.inputNode.removeTap(onBus: 0) }
+        tapInstalled = false
         engine.stop()
         running = false
     }
 
     public var isRunning: Bool { running }
 
-    public enum CaptureError: Error {
+    public enum CaptureError: Error, Equatable, Sendable {
         case noInput
+        case unsupportedFormat
     }
 }
 

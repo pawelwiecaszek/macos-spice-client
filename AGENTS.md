@@ -262,10 +262,76 @@ Goal: pick an `.iso` on the Mac and have it appear in the guest as a CD/DVD driv
 - TLS for the API: macOS trust **or** the cluster CA learned from that host's `.vv` (`pve-root-ca`), with hostname check; or a leaf SHA-256 fingerprint the user explicitly pinned after seeing it. No skip-verification path.
 - Endpoints: `GET /cluster/resources?type=vm`, `GET /nodes/{node}/qemu/{vmid}/status/current`, `POST …/status/{start|shutdown|reboot|reset|stop|suspend|resume}`, `POST …/spiceproxy` (fresh connection file → parsed by `VVFileParser`, so it gets the same validation as a downloaded `.vv`). Reset/Stop require confirmation. Token needs VM.Audit, VM.PowerMgmt, VM.Console.
 
+## 7e. Ravada portal and connection-download helper (M8)
+
+- `Ravada` package models decode the ordinary-user catalog only, preserving nested
+  clone IDs and unknown policy/state. Authentication stays in a WebKit isolated
+  client-world fixed-route fetch; never export cookies or use page-world globals.
+  Broker requests have size/time limits, no redirects, and per-request abort
+  ownership. Catalog refresh is manual; job polling belongs only to explicit Connect.
+  Cancel on navigation/hide/close/minimize. The Ravada 2.4.6 catalog can enqueue
+  server thumbnail refreshes; do not describe it as entirely side-effect-free.
+- Native My Desktops uses server-authorized clone/standalone IDs, per-profile/address
+  machine favorites and a single Connect at a time. Revalidate access before Start and
+  before fetching a ticket; verify matching request ID, successful done, expected domain,
+  active/unlocked state and ready display. Never retry a Start send. Cancelled/ambiguous
+  starts may continue server-side. Unsupported/denied metadata and clone-required bases
+  fall back to the portal. Any advertised TLS driver blocks fallback to plain, even when
+  its extension/readiness metadata is incomplete. No screenshot fetches or silent clones.
+- Session origin is app-owned context carried through open/replace. Explicit Ravada
+  origin prevents Proxmox inference from .vv contents. Machine identity comes only
+  from the configured-origin/base-path SPICE display response route; otherwise nil.
+  Before adding future broker actions, verify the session's portal origin/store epoch
+  still matches its saved profile; profile UUID alone must not authorize another origin.
+
+- Connections, portal browsing, saved profiles, Proxmox VM browsing and Settings share
+  `MainWindowController`; VDI windows remain independent. Hidden portals reject
+  navigation/download admission and late connection handoffs. Cmd+, and VDI Connections
+  return to the main window. Focusing it preserves unsaved drafts.
+
+- Offer Ravada alongside the native Proxmox VM browser and manual `.vv` opening.
+- Saved Ravada profiles own a name, validated HTTPS address, favorite flag, browser-store
+  UUID and optional session preference overrides. Migrate the legacy address and its
+  existing origin-store UUID once. Persist empty profiles after removal so legacy data
+  cannot resurrect them. New same-origin profiles still receive independent login stores.
+- Profile edits, selection/removal and login clearing must not close active VDI sessions.
+  An origin change creates a fresh browser store; clear-login rotates only the target
+  profile's store before erasing old browser data. Corrupt metadata is preserved and
+  writes are blocked rather than silently discarding saved profiles.
+- Profile preferences inherit General settings unless explicitly overridden. Overrides
+  use nonpersistent session settings, never write General defaults, and survive reconnect.
+- `App/Ravada` embeds the configured HTTPS portal with WebKit; browser authentication
+  stays in a separate persistent WebKit data store for each saved profile. Only release-verified
+  catalog/metadata/start/job/display routes are exposed. Native Connect may submit Start
+  once; no standalone power controls, cloning or ticket-renewal API is assumed.
+- Ravada console sessions start windowed regardless of a generated `fullscreen` hint;
+  manually opened connection files retain their existing fullscreen behavior.
+- Ravada may render its LDAP login page as HTTP 401; allow same-origin renderable HTML
+  login pages instead of discarding them. Recovery navigates to the configured portal
+  without replaying a machine action. Stop invalidates pending downloads and parsing;
+  late navigation callbacks must not overwrite a newer load's state. Portal diagnostics
+  are bounded in-memory counters and fixed failure categories only, copied on request.
+- Each rendered portal document may offer one initial automatic connection. Any accepted
+  handoff, including a manual View download, consumes that allowance. Later downloads
+  require `WKDownload.isUserInitiated`; blocked automatic offers show a nonmodal notice
+  and increment `automaticLaunchesBlocked`. Do not infer user intent from mouse-button
+  numeric values or bypass the existing origin/frame checks.
+- Connection downloads must remain on the configured HTTPS origin (including port),
+  preserve the browser request/session, use the existing `VVFileParser`, and be bounded
+  to 1 MiB with a timeout. Clean up app-owned temporary files. Portal TLS uses macOS
+  trust; a downloaded `.vv` never teaches the portal a CA.
+- `App/Downloads` is opt-in and watches a user-selected folder only while the app runs.
+  Permission is session-only; no new entitlement, login item, or background service.
+  Ignore baseline files, wait for stable contents, reject symlinks and oversized files,
+  and verify validated contents again during delivery. Central file-opening deduplication
+  prevents browser/Finder/watcher duplicates without retaining plaintext tickets.
+- `AppIntegrationTests` contains hosted Swift Testing tests for these app workflows;
+  `SpiceClientTests` is included in the shared Xcode scheme.
+
 ## 8. Input & window behaviour
 
 - Capture keyboard in a first-responder `NSView`; map `NSEvent.keyCode` (macOS virtual key) → PC AT set-1 scancode via a static table in `App/Input/Keymap.swift`. Extended keys (arrows, Ins/Del/Home/End/PgUp/PgDn, right Ctrl/Alt, keypad Enter/÷) use the `0xE0` prefix; key-up sets bit `0x80` on the scancode byte. Verify encoding against `spice-gtk` before shipping.
-- Cmd key: configurable — send as Windows/Super, or reserve for macOS shortcuts (default: reserve Cmd+Q/W/H/Tab/Space; send everything else).
+- Cmd key: configurable — send as Windows/Super, or reserve for macOS shortcuts (default: reserve Cmd+Q/W/H/Tab/Space and Cmd+?; send everything else).
 - Provide menu items + `.vv`-defined hotkeys for: Send Ctrl+Alt+Del (`secure-attention`), Release cursor, Toggle fullscreen.
 - Pointer: client mode = absolute positions, system cursor hidden only over the view. Server mode = pointer lock (`CGAssociateMouseAndMouseCursorPosition(false)` + relative deltas), release via hotkey.
 - Sync Caps/Num/Scroll lock state on focus gain.
@@ -309,7 +375,7 @@ Goal: pick an `.iso` on the Mac and have it appear in the guest as a CD/DVD driv
    - **M4a – ISO mount (§7b)** and **M4b – USB redirection (§7a)**: usbredir codec + channel, emulated CD-ROM, IOKit host backend, toolbar menus. (Prioritised by the maintainer ahead of M5.)
    - **M4c – Smartcard passthrough (§7c)** and **M6a – Clipboard**: prioritised by the maintainer ahead of M5.
 6. **M5 – Performance:** GLZ (+ZLIB-GLZ), LZ4 images, JPEG, H.264/H.265 via VideoToolbox, stream reports, renderer backpressure. *(Done. GLZ/LZ4 were written from a prose format spec and verified against real spice-server captures in `Tests/Fixtures/display`. VP8/VP9 deliberately not supported: spice-server VP9 is profile 1 (4:4:4), rejected by VideoToolbox; VP8 has no macOS decoder; adding libvpx was declined by the maintainer.)*
-7. **M6 – Agent:** clipboard, dynamic resolution (monitors config), multi-monitor groundwork. *(Done: one window per display channel (≤ 4), display id on pointer events, multi-monitor layout via VD_AGENT_MONITORS_CONFIG, file transfer to the guest (FILE_XFER_START/STATUS/DATA, 32 KiB chunks paced by the agent outbox, names sanitised to a bare file name). Open: per-head views for single-surface multi-head guests.)*
+7. **M6 – Agent:** clipboard, dynamic resolution (monitors config), multi-monitor groundwork. *(Done: one window per display channel (≤ 4), display id on pointer events, multi-monitor layout via VD_AGENT_MONITORS_CONFIG, file transfer to the guest (FILE_XFER_START/STATUS/DATA, 32 KiB chunks paced by the agent outbox, names sanitised to a bare file name). C4: per-head shared-texture views and capability-gated complete-set resizing now have local regression coverage; user-reported single/two-monitor functional acceptance passed on the tested deployment; broader platform coverage remains pending.)*
 8. **M7 – Audio:** playback, then record. *(Done: playback/record channels, raw PCM + Opus playback via AudioToolbox (variable frames per packet), jitter buffer ≤ 250 ms, microphone off by default per session and sent only while the guest records (raw PCM; Opus input needs a server built with Opus). Entitlement `device.audio-input` + `NSMicrophoneUsageDescription`.)*
 9. **M8 – Polish:** settings, error UX, reconnect, accessibility labels. (Signing and notarization are out of scope: the maintainer builds and runs the app locally.)
 
@@ -325,3 +391,53 @@ Test environments: Proxmox VE VM with QXL or virtio-gpu + `spice-vdagent`; plain
 - Don't invent wire constants — look them up. If you can't verify, leave a `// TODO(verify):` and say so in your summary.
 - Never commit real `.vv` files, tickets, hostnames, or CA material from the maintainer's infrastructure.
 - Update this file when a fixed decision changes.
+
+## 13. Help and capability evidence
+
+- Built-in offline Help reuses MainWindowController and is available from the Help
+  menu, Connections and Cmd+?. Release captured VDI input when opening it; Help must
+  not close a VDI. Keep the Help shortcut local even when forwarding Command keys.
+- Help content must distinguish client implementation from negotiated/server/guest
+  availability. No full-SPICE, zero-copy, bidirectional-file or universal-device claims.
+- docs/CLIENT_CAPABILITIES.md records the 2026-11-11 audit. Dropped drawing commands,
+  WAIT_FOR_CHANNELS/cache ordering and A/V timing have automated coverage; the user accepted
+  C3 functional playback, output-route, microphone and reconnect checks. C4 shared-surface
+  heads and complete-set resizing have automated coverage and user-reported single/two-monitor
+  functional acceptance on the tested deployment; broader multi-head platform coverage,
+  migration and CPU-copy video delivery remain explicit gaps.
+  Update this matrix with implementation and measured/live evidence as fixes land.
+
+## C5 file-transfer lifetime
+
+- App file-transfer workers and progress callbacks are generation/per-file bound.
+  Queued security scopes release on Cancel; only the active sender releases its own
+  acquired scope. Local queue: 256 waiting files plus one active.
+- Initial/final guest statuses are cancellable and bounded (30 s default, SDK clamp
+  1 ms–120 s), with at most 16 active IDs and two early statuses per ID. Ignore
+  completed/unknown IDs and duplicate ready/terminal results; never retry START
+  automatically after cancellation/timeout.
+- File START/DATA/CANCEL bind to the Main wire-owned agent epoch and fresh transfer
+  policy. Queue cancellation on the independent bounded Main sender; never perform
+  cleanup socket writes on a cancelled caller task. Keep started-message framing
+  intact. File queue: 64 ordinary messages, 80 with reserved cleanup, within the
+  existing shared byte budget. Include queued file bytes in flow-control pacing.
+- Regression evidence and remaining live checks: docs/FILE_TRANSFER_LIFECYCLE.md.
+
+## C5 clipboard lifetime
+
+- Native clipboard sharing requires an active session and effective opt-in. Revoke
+  queued sharing synchronously on preference changes and on focus/stop/ownership
+  changes. Check pasteboard freshness again after asynchronous image conversion.
+- Agent/negotiation/ownership observations are wire-owned. REQUEST/DATA have no
+  request ID: keep one committed request and one latest deferred offer; release,
+  timeout and capability reannouncement are not response-drain fences. Proven-unsent
+  requests may be cancelled using their local transmission receipt.
+- Clipboard inbox defaults: 16 events/32 MiB queued DATA, finite maximum 64 events/32 MiB.
+  Overflow/malformed controls end clipboard delivery, invalidate queued observations
+  and retain VDI connectivity. Reconnect recovers terminal clipboard failures.
+- Images: 32 MiB encoded, 64 Mi pixels decoded; validate dimensions before decode,
+  require actual PNG from guest, convert off MainActor with one job/controller.
+- All native agent-message admission uses the independent owned sender, including
+  resize and clipboard. Recheck sharing after encoding before first chunk; complete
+  framing after commitment. Clipboard queue max 16 messages within shared byte budget.
+- Tests use isolated named pasteboards. See docs/CLIPBOARD_LIFECYCLE.md.

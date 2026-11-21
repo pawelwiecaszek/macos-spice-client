@@ -5,28 +5,49 @@ import USBRedirWire
 public protocol BlockSource: Sendable {
     var size: UInt64 { get }
     func read(offset: UInt64, count: Int) throws -> [UInt8]
+    /// Releases owned storage. Implementations with resources must make this idempotent.
+    func close()
+}
+
+extension BlockSource {
+    public func close() {}
 }
 
 /// An image file read with `pread` semantics through `FileHandle`.
 public final class FileBlockSource: BlockSource, @unchecked Sendable {
     // FileHandle is only used under `lock`; size is immutable.
-    private let handle: FileHandle
+    private var handle: FileHandle?
     private let lock = NSLock()
     public let size: UInt64
 
     public init(url: URL) throws {
-        handle = try FileHandle(forReadingFrom: url)
-        size = try handle.seekToEnd()
+        let opened = try FileHandle(forReadingFrom: url)
+        do {
+            size = try opened.seekToEnd()
+        } catch {
+            try? opened.close()
+            throw error
+        }
+        handle = opened
     }
 
     public func read(offset: UInt64, count: Int) throws -> [UInt8] {
         lock.lock()
         defer { lock.unlock() }
+        guard let handle else { throw POSIXError(.EBADF) }
         try handle.seek(toOffset: offset)
         return Array(try handle.read(upToCount: count) ?? Data())
     }
 
-    deinit { try? handle.close() }
+    public func close() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let handle else { return }
+        self.handle = nil
+        try? handle.close()
+    }
+
+    deinit { close() }
 }
 
 /// In-memory image (tests).
@@ -48,6 +69,7 @@ public actor EmulatedCDROM: USBRedirDevice {
     private var scsi: SCSICDROM
     private var bot = BulkOnlyTransport()
     private var configured: UInt8 = 0
+    private var closed = false
     /// Called when the guest ejects the medium (START STOP UNIT with LoEj).
     private let onEject: (@Sendable () -> Void)?
 
@@ -82,6 +104,7 @@ public actor EmulatedCDROM: USBRedirDevice {
     }
 
     public func control(setup: USBControlSetup, data: [UInt8]) -> USBTransferResult {
+        guard !closed else { return .failed(.ioerror) }
         let recipient = setup.requestType & 0x1F
         let kind = (setup.requestType >> 5) & 0x03
         switch (kind, setup.request) {
@@ -115,6 +138,7 @@ public actor EmulatedCDROM: USBRedirDevice {
     }
 
     public func bulk(endpoint: UInt8, data: [UInt8], length: Int) -> USBTransferResult {
+        guard !closed else { return .failed(.ioerror) }
         switch endpoint {
         case Self.bulkOut:
             return bot.handleOut(data, scsi: &scsi, source: source, onEject: onEject)
@@ -125,9 +149,12 @@ public actor EmulatedCDROM: USBRedirDevice {
         }
     }
 
-    public func interrupt(endpoint: UInt8, data: [UInt8], length: Int) -> USBTransferResult { .failed(.inval) }
+    public func interrupt(endpoint: UInt8, data: [UInt8], length: Int) -> USBTransferResult {
+        .failed(closed ? .ioerror : .inval)
+    }
 
     public func setConfiguration(_ value: UInt8) -> USBRedirStatus {
+        guard !closed else { return .ioerror }
         guard value <= 1 else { return .stall }
         configured = value
         return .success
@@ -136,18 +163,26 @@ public actor EmulatedCDROM: USBRedirDevice {
     public func configuration() -> UInt8 { configured }
 
     public func setAltSetting(interface: UInt8, alt: UInt8) -> USBRedirStatus {
-        interface == 0 && alt == 0 ? .success : .stall
+        guard !closed else { return .ioerror }
+        return interface == 0 && alt == 0 ? .success : .stall
     }
 
-    public func altSetting(interface: UInt8) -> UInt8? { interface == 0 ? 0 : nil }
+    public func altSetting(interface: UInt8) -> UInt8? { !closed && interface == 0 ? 0 : nil }
 
     public func reset() -> Bool {
+        guard !closed else { return false }
         bot = BulkOnlyTransport()
         return true
     }
 
     public func abort(endpoint: UInt8) {}
-    public func close() {}
+    public func close() {
+        guard !closed else { return }
+        closed = true
+        configured = 0
+        bot = BulkOnlyTransport()
+        source.close()
+    }
 }
 
 // MARK: - Descriptors

@@ -51,19 +51,24 @@ public enum ClipboardCodec {
         }
         switch kind {
         case .clipboardGrab:
+            guard reader.remaining % 4 == 0, reader.remaining / 4 <= 64 else {
+                throw .limitExceeded("clipboard types")
+            }
             var types: [ClipboardDataType] = []
-            while !reader.isAtEnd, types.count < 64 {
+            while !reader.isAtEnd {
                 if let type = ClipboardDataType(rawValue: try reader.readU32()), type != .none { types.append(type) }
             }
             return .grab(selection: selection, types: types)
         case .clipboardRequest:
             guard let type = ClipboardDataType(rawValue: try reader.readU32()) else { return nil }
+            guard reader.isAtEnd else { throw .invalidValue("clipboard request trailing bytes") }
             return .request(selection: selection, type: type)
         case .clipboard:
             guard let type = ClipboardDataType(rawValue: try reader.readU32()) else { return nil }
             guard reader.remaining <= maxDataSize else { throw .limitExceeded("clipboard \(reader.remaining)") }
             return .data(selection: selection, type: type, bytes: Array(message.data[reader.offset...]))
         default:
+            guard reader.isAtEnd else { throw .invalidValue("clipboard release trailing bytes") }
             return .release(selection: selection)
         }
     }

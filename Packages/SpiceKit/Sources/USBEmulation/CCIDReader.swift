@@ -1,3 +1,4 @@
+import Foundation
 import USBRedirWire
 
 /// A smartcard as seen by the emulated reader (implemented with CryptoTokenKit on macOS).
@@ -49,6 +50,12 @@ public actor EmulatedCCIDReader: USBRedirDevice {
     private var pendingNotification: [UInt8]? = [0x50, 0x03]  // card present + changed
     private var interruptWaiter: CheckedContinuation<Bool, Never>?
     private var closed = false
+    private var fullyClosed = false
+    private var generation = UUID()
+    private var processing = false
+    private var closeWaiters: [CheckedContinuation<Void, Never>] = []
+    private var inWaiterID: UUID?
+    private var interruptWaiterID: UUID?
 
     public init(card: any CCIDCard) {
         self.card = card
@@ -70,6 +77,7 @@ public actor EmulatedCCIDReader: USBRedirDevice {
     }
 
     public func control(setup: USBControlSetup, data: [UInt8]) -> USBTransferResult {
+        guard !closed else { return .failed(.cancelled) }
         let kind = (setup.requestType >> 5) & 0x03
         switch (kind, setup.request) {
         case (0, 0x06):  // GET_DESCRIPTOR
@@ -100,14 +108,18 @@ public actor EmulatedCCIDReader: USBRedirDevice {
     }
 
     public func bulk(endpoint: UInt8, data: [UInt8], length: Int) async -> USBTransferResult {
+        guard !closed else { return .failed(.cancelled) }
         switch endpoint {
         case Self.bulkOut:
             // Refuse (STALL) rather than queue: the guest must read answers first.
-            guard data.count <= Self.maxOutTransfer, inQueue.count <= Self.maxUnreadBytes else {
+            guard !processing, data.count <= Self.maxOutTransfer, inQueue.count <= Self.maxUnreadBytes else {
                 return .failed(.stall)
             }
+            processing = true
+            defer { processing = false }
             outBuffer += data
             await processOutBuffer()
+            guard !closed else { return .failed(.cancelled) }
             return USBTransferResult(status: .success, actualLength: data.count)
         case Self.bulkIn:
             while inQueue.isEmpty {
@@ -124,6 +136,7 @@ public actor EmulatedCCIDReader: USBRedirDevice {
     }
 
     public func interrupt(endpoint: UInt8, data: [UInt8], length: Int) async -> USBTransferResult {
+        guard !closed else { return .failed(.cancelled) }
         guard endpoint == Self.interruptIn else { return .failed(.inval) }
         while pendingNotification == nil {
             guard !closed else { return .failed(.cancelled) }
@@ -138,23 +151,27 @@ public actor EmulatedCCIDReader: USBRedirDevice {
     /// endpoint ends the older one, and task cancellation ends it too, so no suspended
     /// request is ever left behind.
     private func wait(for endpoint: UInt8) async -> Bool {
-        await withTaskCancellationHandler {
+        let id = UUID()
+        return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 if endpoint == Self.bulkIn {
                     inWaiter?.resume(returning: false)
                     inWaiter = continuation
+                    inWaiterID = id
                 } else {
                     interruptWaiter?.resume(returning: false)
                     interruptWaiter = continuation
+                    interruptWaiterID = id
                 }
-                if Task.isCancelled { abort(endpoint: endpoint) }
+                if Task.isCancelled { abort(endpoint: endpoint, ifID: id) }
             }
         } onCancel: {
-            Task { await self.abort(endpoint: endpoint) }
+            Task { await self.abort(endpoint: endpoint, ifID: id) }
         }
     }
 
     public func setConfiguration(_ value: UInt8) -> USBRedirStatus {
+        guard !closed else { return .cancelled }
         guard value <= 1 else { return .stall }
         configured = value
         return .success
@@ -163,12 +180,15 @@ public actor EmulatedCCIDReader: USBRedirDevice {
     public func configuration() -> UInt8 { configured }
 
     public func setAltSetting(interface: UInt8, alt: UInt8) -> USBRedirStatus {
-        interface == 0 && alt == 0 ? .success : .stall
+        guard !closed else { return .cancelled }
+        return interface == 0 && alt == 0 ? .success : .stall
     }
 
-    public func altSetting(interface: UInt8) -> UInt8? { interface == 0 ? 0 : nil }
+    public func altSetting(interface: UInt8) -> UInt8? { !closed && interface == 0 ? 0 : nil }
 
     public func reset() -> Bool {
+        guard !closed else { return false }
+        generation = UUID()
         outBuffer.removeAll()
         inQueue.removeAll()
         powered = false
@@ -176,30 +196,55 @@ public actor EmulatedCCIDReader: USBRedirDevice {
     }
 
     public func abort(endpoint: UInt8) {
+        abort(endpoint: endpoint, ifID: nil)
+    }
+
+    private func abort(endpoint: UInt8, ifID: UUID?) {
         switch endpoint {
         case Self.bulkIn:
+            if let ifID, inWaiterID != ifID { return }
             inWaiter?.resume(returning: false)
             inWaiter = nil
+            inWaiterID = nil
         case Self.interruptIn:
+            if let ifID, interruptWaiterID != ifID { return }
             interruptWaiter?.resume(returning: false)
             interruptWaiter = nil
+            interruptWaiterID = nil
         default:
             break
         }
     }
 
     public func close() async {
+        if closed {
+            if !fullyClosed { await withCheckedContinuation { closeWaiters.append($0) } }
+            return
+        }
         closed = true
+        generation = UUID()
+        configured = 0
+        powered = false
+        outBuffer.removeAll()
+        inQueue.removeAll()
+        pendingNotification = nil
         abort(endpoint: Self.bulkIn)
         abort(endpoint: Self.interruptIn)
-        if atr != nil { await card.disconnect() }
+        // Do not hold USB teardown waiting for an unresponsive card callback. A pending
+        // connect owns its result and disconnects it after observing this revocation.
+        let hadSession = atr != nil
         atr = nil
+        if hadSession { await card.disconnect() }
+        fullyClosed = true
+        let waiters = closeWaiters
+        closeWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
     }
 
     // MARK: CCID commands
 
     private func processOutBuffer() async {
-        while outBuffer.count >= 10 {
+        while !closed, outBuffer.count >= 10 {
             guard inQueue.count <= Self.maxUnreadBytes else {
                 outBuffer.removeAll()  // more batched commands than answers we will hold
                 return
@@ -215,7 +260,10 @@ public actor EmulatedCCIDReader: USBRedirDevice {
             guard outBuffer.count >= 10 + length else { return }
             let message = Array(outBuffer.prefix(10 + length))
             outBuffer.removeFirst(10 + length)
-            respond(await execute(message))
+            let current = generation
+            let response = await execute(message)
+            guard !closed, current == generation else { return }
+            respond(response)
         }
     }
 
@@ -232,12 +280,23 @@ public actor EmulatedCCIDReader: USBRedirDevice {
         }
         switch header[0] {
         case 0x62:  // PC_to_RDR_IccPowerOn
+            let current = generation
             do {
-                if atr == nil { atr = try await card.connect() }
+                if atr == nil {
+                    let connectedATR = try await card.connect()
+                    guard !closed, current == generation, !connectedATR.isEmpty else {
+                        await card.disconnect()
+                        guard !closed, current == generation else { return [] }
+                        cardFailed = true
+                        return CCIDResponse.dataBlock(for: header, iccStatus: 2, failed: true, error: 0xFE, data: [])
+                    }
+                    atr = connectedATR
+                }
                 powered = true
                 cardFailed = false
                 return CCIDResponse.dataBlock(for: header, iccStatus: 0, data: atr ?? [])
             } catch {
+                guard !closed, current == generation else { return [] }
                 cardFailed = true
                 return CCIDResponse.dataBlock(for: header, iccStatus: 2, failed: true, error: 0xFE, data: [])  // ICC_MUTE
             }
@@ -251,7 +310,9 @@ public actor EmulatedCCIDReader: USBRedirDevice {
                 return CCIDResponse.dataBlock(for: header, iccStatus: iccStatus, failed: true, error: 0xFE, data: [])
             }
             do {
+                let current = generation
                 let response = try await card.transmit(payload)
+                guard !closed, current == generation else { return [] }
                 guard response.count <= Self.maxMessageLength - 10 else {
                     return CCIDResponse.dataBlock(for: header, iccStatus: iccStatus, failed: true, error: 0xFB, data: [])  // HW_ERROR
                 }
@@ -269,9 +330,11 @@ public actor EmulatedCCIDReader: USBRedirDevice {
     }
 
     private func respond(_ bytes: [UInt8]) {
+        guard !closed, !bytes.isEmpty else { return }
         inQueue += bytes
         inWaiter?.resume(returning: true)
         inWaiter = nil
+        inWaiterID = nil
     }
 }
 
