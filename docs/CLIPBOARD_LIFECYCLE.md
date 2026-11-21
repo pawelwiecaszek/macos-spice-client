@@ -55,8 +55,11 @@ ownership and pasteboard freshness before writing.
 Regression tests use unique named pasteboards, not the user's general clipboard.
 Coverage includes text/PNG/TIFF, no-data replies, overlapping ownership, stale image
 completion, preference/focus/stop, agent replacement, request receipts, byte/event
-pressure, exact control layouts and cancellation-aware socket probes. Live text/PNG
-sharing in both directions and focus/reconnect behavior remain pending.
+pressure, exact control layouts and cancellation-aware socket probes. The user
+reported all requested live checks passed on build `66098b3`: text and image copying
+in both directions, preservation of newly copied Mac text while the VDI was in the
+background, and text copying after reconnect. This accepts the clipboard slice on
+the tested deployment; other guest/agent combinations remain unverified.
 
 Protocol references: [agent protocol](https://www.spice-space.org/agent-protocol.html),
 [pinned agent header](https://gitlab.freedesktop.org/spice/spice-protocol/-/blob/499cc8326a672e9e5747efc017319b19e1594b42/spice/vd_agent.h),

@@ -164,4 +164,6 @@ Clipboard and hardware-specific acceptance remain separate.
 The next C5 slice implements [clipboard lifetime](CLIPBOARD_LIFECYCLE.md):
 revocable consent, wire-owned agent/negotiation/ownership, serialized replies, bounded
 delivery and image conversion, and independent agent sending. Local regression
-coverage passes; live clipboard acceptance and hardware-specific coverage remain pending.
+coverage passes. The user accepted bidirectional text/image sharing, background
+Mac clipboard preservation and reconnect on build `66098b3`. USB/ISO and smartcard
+hardware-specific coverage remains pending.
