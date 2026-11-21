@@ -4,8 +4,8 @@ import Foundation
 import Observation
 import SpiceKit
 
-/// Visible-page catalog and a single explicit Connect operation. No background action
-/// retries: cancelling a submitted start stops this client, not the server job.
+/// Visible-page catalog, explicit Connect and confirmed Shut Down, one at a time.
+/// Cancelling monitoring never undoes a submitted server mutation or replays it.
 @MainActor
 @Observable
 final class RavadaDesktopStore: NSObject {
@@ -16,10 +16,18 @@ final class RavadaDesktopStore: NSObject {
     private(set) var favoriteIDs: Set<Int> = []
     private(set) var isRefreshing = false
     private(set) var connectingID: Int?
+    struct ShutdownConfirmation: Identifiable {
+        let id: UUID
+        let machineID: Int
+        let name: String
+    }
+    private(set) var shuttingDownID: Int?
+    private(set) var shutdownConfirmation: ShutdownConfirmation?
+    private(set) var statusMessage: String?
     private(set) var progressMessage: String?
     private(set) var errorMessage: String?
     private(set) var hasLoaded = false
-    var isBusy: Bool { isRefreshing || connectingID != nil }
+    var isBusy: Bool { isRefreshing || connectingID != nil || shuttingDownID != nil }
     var visibleRows: [RavadaDesktopRow] {
         rows.filter { (!favoritesOnly || favoriteIDs.contains($0.id)) &&
             (query.isEmpty || $0.name.localizedStandardContains(query) || ($0.parentName?.localizedStandardContains(query) ?? false)) }
@@ -35,6 +43,7 @@ final class RavadaDesktopStore: NSObject {
     @ObservationIgnored private var generation = UUID()
     @ObservationIgnored private var isVisible = false
     @ObservationIgnored private var submittedStart = false
+    @ObservationIgnored private var submittedShutdown = false
     @ObservationIgnored private var resumeAfterUnhide = false
 
     init(profile: RavadaPortalProfile, defaults: UserDefaults = .standard,
@@ -69,7 +78,7 @@ final class RavadaDesktopStore: NSObject {
         resumeAfterUnhide = wasVisible
     }
     @objc private func applicationDidUnhide() {
-        if resumeAfterUnhide { activate() } // Refresh only; never replay a submitted Start.
+        if resumeAfterUnhide { activate() } // Refresh only; never replay a power action.
     }
 
     func toggleFavorite(_ id: Int) {
@@ -82,7 +91,7 @@ final class RavadaDesktopStore: NSObject {
     func refresh() {
         guard isVisible, !isBusy else { return }
         let token = UUID(); generation = token
-        isRefreshing = true; errorMessage = nil
+        isRefreshing = true; errorMessage = nil; statusMessage = nil
         work = Task { [weak self] in
             guard let self else { return }
             do {
@@ -101,7 +110,7 @@ final class RavadaDesktopStore: NSObject {
     func connect(_ row: RavadaDesktopRow) {
         guard isVisible, !isBusy, !row.portalOnly, rows.contains(where: { $0.id == row.id && !$0.portalOnly }) else { return }
         let token = UUID(); generation = token
-        connectingID = row.id; errorMessage = nil; submittedStart = false
+        connectingID = row.id; errorMessage = nil; statusMessage = nil; submittedStart = false
         progressMessage = String(localized: "Checking desktop access…")
         work = Task { [weak self] in
             guard let self else { return }
@@ -118,11 +127,125 @@ final class RavadaDesktopStore: NSObject {
 
     func cancel(showNotice: Bool = true) {
         let didSubmit = submittedStart
+        let didSubmitShutdown = submittedShutdown
         generation = UUID(); work?.cancel(); work = nil; cancelRequest()
         isRefreshing = false; connectingID = nil; progressMessage = nil; submittedStart = false
-        if showNotice { errorMessage = didSubmit
+        shuttingDownID = nil; shutdownConfirmation = nil; submittedShutdown = false; statusMessage = nil
+        if showNotice { errorMessage = didSubmitShutdown
+            ? String(localized: "Shutdown monitoring cancelled. A submitted shutdown may still continue in Ravada; check the portal before trying again.")
+            : didSubmit
             ? String(localized: "Connection cancelled. A submitted start may still continue in Ravada; check the portal before trying again.")
             : nil }
+    }
+
+    /// Permission discovery is read-only with respect to power. No shutdown until confirmed.
+    func prepareShutdown(_ row: RavadaDesktopRow) {
+        guard isVisible, !isBusy, !row.portalOnly, row.machine.isActive == true,
+              rows.contains(where: { $0.id == row.id && !$0.portalOnly }) else { return }
+        let token = UUID(); generation = token
+        shuttingDownID = row.id; errorMessage = nil; statusMessage = nil
+        progressMessage = String(localized: "Checking shutdown access…")
+        work = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await verifyShutdownAccess(row.id, token: token,
+                    deadline: ContinuousClock.now.advanced(by: .seconds(90)))
+                try ensureCurrent(token)
+                guard let fresh = rows.first(where: { $0.id == row.id }) else {
+                    throw RavadaBrokerError.shutdownUnavailable
+                }
+                shutdownConfirmation = ShutdownConfirmation(id: token, machineID: row.id, name: fresh.name)
+                progressMessage = nil; work = nil
+            } catch {
+                guard generation == token, !Task.isCancelled else { return }
+                errorMessage = message(error)
+                shuttingDownID = nil; progressMessage = nil; work = nil
+            }
+        }
+    }
+
+    func cancelShutdownConfirmation() {
+        if shutdownConfirmation != nil { cancel(showNotice: false) }
+    }
+
+    func confirmShutdown(_ confirmationID: UUID) {
+        guard let confirmation = shutdownConfirmation, confirmation.id == confirmationID,
+              generation == confirmationID, isVisible, shuttingDownID == confirmation.machineID else { return }
+        shutdownConfirmation = nil
+        progressMessage = String(localized: "Rechecking shutdown access…")
+        work = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await shutDown(confirmation)
+                try ensureCurrent(confirmationID)
+                statusMessage = String(localized: "Ravada confirmed that the desktop is shut down.")
+            } catch {
+                guard generation == confirmationID, !Task.isCancelled else { return }
+                errorMessage = submittedShutdown ? RavadaBrokerError.ambiguousShutdown.localizedDescription : message(error)
+            }
+            guard generation == confirmationID else { return }
+            shuttingDownID = nil; progressMessage = nil; work = nil; submittedShutdown = false
+        }
+    }
+
+    private func verifyShutdownAccess(_ id: Int, token: UUID, deadline: ContinuousClock.Instant) async throws {
+        try await verifyCatalog(id, token: token)
+        let info = try await idleMachineInfo(id, token: token, deadline: deadline)
+        // Catalog can_shutdown only reflects running state for ordinary clones (Front.pm:222).
+        // Domain.info uses _init_available_actions/user.can_shutdown instead (Domain.pm:2432).
+        guard info.canShutdown == true else {
+            throw info.canShutdown == false ? RavadaBrokerError.permissionDenied : .shutdownUnavailable
+        }
+        guard info.isActive == true, info.isHibernated == false, info.isVolatile == false else {
+            throw RavadaBrokerError.shutdownUnavailable
+        }
+    }
+
+    private func shutDown(_ confirmation: ShutdownConfirmation) async throws {
+        let id = confirmation.machineID, token = confirmation.id
+        let deadline = ContinuousClock.now.advanced(by: .seconds(180))
+        try await verifyShutdownAccess(id, token: token, deadline: deadline)
+        guard rows.first(where: { $0.id == id })?.name == confirmation.name else {
+            throw RavadaBrokerError.shutdownUnavailable
+        }
+        try ensureCurrent(token, deadline: deadline)
+        submittedShutdown = true
+        progressMessage = String(localized: "Requesting shutdown…")
+        let receipt: RavadaShutdownReceipt
+        do {
+            let response = try await request(.shutdown(id)) // One send, no force parameter, no retry.
+            try ensureCurrent(token, deadline: deadline)
+            receipt = try response.decode(RavadaShutdownReceipt.self)
+            guard receipt.req > 0 else { throw RavadaBrokerError.invalidResponse }
+        } catch let error as RavadaBrokerError {
+            if [.signInRequired, .accessDenied, .permissionDenied].contains(error) { submittedShutdown = false }
+            throw error
+        }
+        var complete = false
+        for _ in 0..<180 {
+            try ensureCurrent(token, deadline: deadline)
+            let response = try await request(.job(receipt.req))
+            try ensureCurrent(token, deadline: deadline)
+            if try response.decode(RavadaJob.self).isComplete(requestID: receipt.req, machineID: id) {
+                complete = true; break
+            }
+            progressMessage = String(localized: "Waiting for Ravada's shutdown request…")
+            try await sleep()
+        }
+        guard complete else { throw RavadaBrokerError.timedOut }
+        for _ in 0..<180 {
+            try ensureCurrent(token, deadline: deadline)
+            let info = try await machineInfo(id, token: token)
+            try ensureCurrent(token, deadline: deadline)
+            if info.isActive == false, info.requests == 0, info.isHibernated == false {
+                try await verifyCatalog(id, token: token)
+                try ensureCurrent(token, deadline: deadline)
+                return
+            }
+            progressMessage = String(localized: "Waiting for the desktop to stop…")
+            try await sleep()
+        }
+        throw RavadaBrokerError.timedOut
     }
 
     private func connect(machineID: Int, token: UUID) async throws {

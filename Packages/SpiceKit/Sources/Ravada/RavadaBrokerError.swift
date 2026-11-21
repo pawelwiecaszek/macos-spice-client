@@ -15,11 +15,13 @@ public enum RavadaBrokerError: Error, Equatable, Sendable, LocalizedError {
     case jobFailed
     case portalRequired
     case ambiguousStart
+    case ambiguousShutdown
+    case shutdownUnavailable
     case cancelled
 
     public var errorDescription: String? {
         switch self {
-        case .invalidAddress: "The saved portal address cannot be used for broker reads."
+        case .invalidAddress: "The saved portal address cannot be used for broker requests."
         case .signInRequired: "Sign in through the Ravada portal, then try again."
         case .accessDenied: "Ravada did not grant access to this request. Sign in through the portal and check your account permissions."
         case .permissionDenied: "Ravada did not permit this account to perform this request. Use the portal to continue."
@@ -30,8 +32,10 @@ public enum RavadaBrokerError: Error, Equatable, Sendable, LocalizedError {
         case .unavailable: "The Ravada request could not be completed. Check the portal and network connection."
         case .timedOut: "The Ravada request timed out. Check the portal before trying again."
         case .jobFailed: "The desktop request did not complete successfully. Check its status in the portal."
-        case .portalRequired: "Use the portal to connect to this desktop. Its state or display details could not be verified."
+        case .portalRequired: "Use the portal to continue with this desktop. Its state or required details could not be verified."
         case .ambiguousStart: "The start request may still be running on Ravada. Check the portal before trying again."
+        case .ambiguousShutdown: "Shutdown could not be confirmed and may still continue in Ravada. Check the portal before submitting another request."
+        case .shutdownUnavailable: "Shutdown is unavailable for this desktop's permissions or state. Use the portal to continue."
         case .cancelled: "The Ravada request was cancelled."
         }
     }

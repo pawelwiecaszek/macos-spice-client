@@ -45,16 +45,16 @@ final class RavadaBrowserTransport {
                 ])
             } catch {
                 guard activeID == id, !Task.isCancelled else { throw RavadaBrokerError.cancelled }
-                throw request.isMutation ? RavadaBrokerError.ambiguousStart : .unavailable
+                throw request.uncertainMutationError ?? .unavailable
             }
             guard activeID == id, !Task.isCancelled, pageURL() == page else { throw RavadaBrokerError.cancelled }
             guard let response = value as? [String: Any] else { throw RavadaBrokerError.invalidResponse }
             if let failure = response["failure"] as? String {
                 switch failure {
-                case "timeout": throw request.isMutation ? RavadaBrokerError.ambiguousStart : .timedOut
+                case "timeout": throw request.uncertainMutationError ?? .timedOut
                 case "size": throw RavadaBrokerError.responseTooLarge
                 case "origin": throw RavadaBrokerError.redirectRejected
-                default: throw request.isMutation ? RavadaBrokerError.ambiguousStart : .unavailable
+                default: throw request.uncertainMutationError ?? .unavailable
                 }
             }
             guard let status = response["status"] as? Int,

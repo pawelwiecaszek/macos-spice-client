@@ -5,6 +5,11 @@ public struct RavadaStartReceipt: Decodable, Sendable {
     public let req: Int
 }
 
+/// /machine/shutdown/{id}.json without a force query (rvd_front:4587–4604).
+public struct RavadaShutdownReceipt: Decodable, Sendable {
+    public let req: Int
+}
+
 /// Request.info in v2.4.6 (lib/Ravada/Request.pm:371–389). Done alone is not success.
 public struct RavadaJob: Decodable, Sendable {
     public let id: Int

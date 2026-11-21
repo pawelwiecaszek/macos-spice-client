@@ -1,6 +1,6 @@
 # Client development order
 
-Updated: 2026-11-17. Execution plan for remaining work; supersedes the original
+Updated: 2026-11-21. Execution plan for remaining work; supersedes the original
 phase-number order. Phases 1–5 are accepted; Phase 5, including Help and channel
 synchronization, is installed. [Draft PR #4](https://github.com/pawelwiecaszek/macos-spice-client/pull/4) records its dependency stack.
 
@@ -213,3 +213,12 @@ and the installed executable/signature verified. C5 is published as
 [draft PR #11](https://github.com/pawelwiecaszek/macos-spice-client/pull/11),
 dependent on #10 with an incremental comparison for review. The final Apple HIG
 audit remains scheduled after the agreed functional phases.
+
+Phase 6 now begins with [confirmed Ravada shutdown](RAVADA_SHUTDOWN.md), on local
+branch `feat/ravada-machine-actions` above the accepted C5 baseline `c7e56f2`.
+The ordinary catalog's can_shutdown flag is not authorization; fresh machine-info
+permission and known nonvolatile state are required before and after confirmation.
+One fixed shutdown request is followed by matching-job and stopped-state checks.
+Ravada may force power off after its server timeout, so this is not described as
+guaranteed graceful shutdown. Other power actions remain portal-only. Automated
+verification and a separate test build precede live acceptance; C5 stays installed.

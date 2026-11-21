@@ -189,8 +189,8 @@ private final class ReconnectRequestFixture {
             if invalidateAfterTicket { valid = false }
             let body = ticketBody ?? "[virt-viewer]\ntype=spice\nhost=guest.example.invalid\ntls-port=5901\npassword=synthetic-\(ticketReads)\nfullscreen=1\n"
             return .init(data: Data(body.utf8), status: 200, contentType: ticketMIME)
-        case .start, .job:
-            Issue.record("Reconnect must never submit Start or poll a Start job")
+        case .start, .shutdown, .job:
+            Issue.record("Reconnect must never submit a power action or poll its job")
             throw RavadaBrokerError.portalRequired
         }
     }

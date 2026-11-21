@@ -50,6 +50,22 @@ struct RavadaBrokerTests {
         await #expect(throws: RavadaBrokerError.unavailable) { try await transport.catalog() }
     }
 
+    @Test func shutdownTransportFailuresUseShutdownGuidanceWithoutRetry() async throws {
+        for failure in ["throw", "timeout", "unknown"] {
+            var sends = 0
+            let transport = try RavadaBrowserTransport(portalURL: portal, pageURL: { page }) { _, arguments in
+                // Abort cleanup is a separate script call, not a repeated mutation.
+                if arguments["endpointURL"] == nil { return NSNull() }
+                sends += 1
+                #expect(arguments["endpointURL"] as? String == "https://portal.example.invalid/vdi/machine/shutdown/42.json")
+                if failure == "throw" { throw NSError(domain: "synthetic", code: 1) }
+                return ["failure": failure]
+            }
+            await #expect(throws: RavadaBrokerError.ambiguousShutdown) { try await transport.request(.shutdown(42)) }
+            #expect(sends == 1)
+        }
+    }
+
     @Test func browserReportedLimitsAndStatusAreMapped() async throws {
         for (failure, expected) in [("timeout", RavadaBrokerError.timedOut), ("size", .responseTooLarge), ("origin", .redirectRejected)] {
             let transport = try RavadaBrowserTransport(portalURL: portal, pageURL: { page }) { _, _ in ["failure": failure] }

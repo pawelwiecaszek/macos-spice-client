@@ -287,6 +287,9 @@ private final class DesktopFixture {
             if ambiguousStart { throw RavadaBrokerError.ambiguousStart }
             if malformedReceipt { return json("{}") }
             return json(#"{"req":12}"#)
+        case .shutdown:
+            Issue.record("Connect must never submit shutdown")
+            throw RavadaBrokerError.portalRequired
         case .job:
             jobReads += 1
             if blockJobs { await withCheckedContinuation { jobContinuation = $0 } }

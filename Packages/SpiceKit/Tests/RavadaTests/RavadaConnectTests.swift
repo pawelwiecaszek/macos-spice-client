@@ -3,6 +3,30 @@ import Testing
 @testable import Ravada
 
 struct RavadaConnectTests {
+    @Test func shutdownUsesOnlyFixedNonForceRouteAndItsOwnUncertainOutcome() throws {
+        let endpoint = try RavadaEndpoint(portalURL: #require(URL(string: "https://portal.example.invalid:8443/vdi/")))
+        let url = try RavadaBrokerRequest.shutdown(42).url(using: endpoint)
+        #expect(url.absoluteString == "https://portal.example.invalid:8443/vdi/machine/shutdown/42.json")
+        #expect(url.query == nil)
+        #expect(RavadaBrokerRequest.shutdown(42).isMutation)
+        #expect(RavadaBrokerRequest.shutdown(42).uncertainMutationError == .ambiguousShutdown)
+        #expect(RavadaBrokerRequest.start(42).uncertainMutationError == .ambiguousStart)
+        for id in [0, -1] {
+            #expect(throws: RavadaBrokerError.invalidResponse) { try RavadaBrokerRequest.shutdown(id).url(using: endpoint) }
+        }
+    }
+
+    @Test func shutdownMetadataPreservesUnknownPermissionAndVolatility() throws {
+        func info(_ flags: String) throws -> RavadaMachineInfo {
+            try response("{\"id\":42,\"is_active\":1,\"is_base\":0,\"requests\":0,\"hardware\":{\"display\":[]},\(flags)}").decode(RavadaMachineInfo.self)
+        }
+        let permitted = try info(#""can_shutdown":"1","is_volatile":"""#)
+        #expect(permitted.canShutdown == true && permitted.isVolatile == false)
+        let denied = try info(#""can_shutdown":0,"is_volatile":true"#)
+        #expect(denied.canShutdown == false && denied.isVolatile == true)
+        let unknown = try info(#""can_shutdown":"future","is_volatile":2"#)
+        #expect(unknown.canShutdown == nil && unknown.isVolatile == nil)
+    }
     private func response(_ text: String) -> RavadaBrokerResponse {
         .init(data: Data(text.utf8), status: 200, contentType: "application/json")
     }

@@ -8,6 +8,9 @@ public struct RavadaMachineInfo: Decodable, Sendable {
     public let isBase: Bool?
     public let isHibernated: Bool?
     public let requests: Int?
+    /// Unlike the ordinary catalog's convenience flag, info uses user.can_shutdown.
+    public let canShutdown: Bool?
+    public let isVolatile: Bool?
     public let displays: [Display]
 
     public struct Display: Decodable, Sendable {
@@ -31,6 +34,7 @@ public struct RavadaMachineInfo: Decodable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id, requests, hardware
         case isActive = "is_active", isBase = "is_base", isHibernated = "is_hibernated"
+        case canShutdown = "can_shutdown", isVolatile = "is_volatile"
     }
     private struct Hardware: Decodable { let display: [Display] }
     public init(from decoder: any Decoder) throws {
@@ -38,6 +42,7 @@ public struct RavadaMachineInfo: Decodable, Sendable {
         id = try values.decode(Int.self, forKey: .id)
         isActive = values.flag(.isActive); isBase = values.flag(.isBase); isHibernated = values.flag(.isHibernated)
         requests = try values.decodeIfPresent(Int.self, forKey: .requests)
+        canShutdown = values.flag(.canShutdown); isVolatile = values.flag(.isVolatile)
         displays = try values.decode(Hardware.self, forKey: .hardware).display
         guard id > 0, displays.count <= 32 else { throw RavadaBrokerError.invalidResponse }
     }
