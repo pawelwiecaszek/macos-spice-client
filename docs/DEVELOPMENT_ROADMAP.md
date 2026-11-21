@@ -232,5 +232,14 @@ messages. It requires explicit can_reboot metadata and reports job completion pl
 a running VM, not verified guest boot. All 446 package and 201 hosted tests pass;
 review and signed Release verification pass. The user accepted cancellation
 preserving the VDI and a confirmed guest reboot with working input on build
-`9012513`. Hibernate/resume remain portal-only; their release-specific contracts
-and deployed availability are the next Phase 6 scope. C5 remains installed.
+`9012513`. Hibernate/saved-state Resume follow as the next local slice.
+C5 remains installed.
+
+[Hibernate and saved-state Resume](RAVADA_HIBERNATE_RESUME.md) now extend the same
+bounded flow for verified KVM metadata. Resume uses Start for a known managed saved
+state, not the paused-VM Resume route, and cannot start an ordinary stopped desktop.
+Confirmation and Help warn that Ravada may discard saved memory and cold-start on
+restore failure; running state is not memory-restoration proof. All 448 package
+and 207 hosted tests pass; review and signed Release verification pass. Live
+saved-state acceptance is pending. Paused-VM Resume and other backends stay in the
+portal; Phase 6 remains local and installed C5 is unchanged.

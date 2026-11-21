@@ -6,6 +6,137 @@ import Testing
 @MainActor
 // Share the existing serialized suite: hide/unhide tests broadcast app-wide notifications.
 extension RavadaDesktopStoreTests {
+    @Test func hibernateThenExplicitResumeUseDistinctStatesAndNeverAutoConnect() async throws {
+        let f = Fixture(), store = try await ready(f)
+        store.preparePowerAction(try #require(store.rows.first), action: .hibernate)
+        let hibernate = try await prepared(store)
+        store.confirmPowerAction(hibernate.id); store.confirmPowerAction(hibernate.id)
+        try await wait { !store.isBusy }
+        #expect(f.hibernates == 1 && f.starts == 0 && !f.active && f.hibernated)
+        #expect(store.statusMessage == RavadaDesktopPowerAction.hibernate.successMessage)
+        store.connect(try #require(store.rows.first))
+        try await wait { !store.isBusy }
+        #expect(f.starts == 0 && f.opens == 0 && store.errorMessage == RavadaBrokerError.resumeRequired.localizedDescription)
+
+        f.nextJob(13); f.acceptStartAsResume = true
+        store.preparePowerAction(try #require(store.rows.first), action: .resume)
+        let resume = try await prepared(store)
+        #expect(resume.action == .resume && f.starts == 0)
+        store.confirmPowerAction(resume.id); store.confirmPowerAction(resume.id)
+        try await wait { !store.isBusy }
+        #expect(f.starts == 1 && f.resumes == 1 && f.active && !f.hibernated)
+        #expect(f.opens == 0 && f.shutdowns == 0 && f.reboots == 0 && store.errorMessage == nil)
+        #expect(store.statusMessage == RavadaDesktopPowerAction.resume.successMessage)
+        store.deactivate()
+    }
+
+    @Test func savedActionsRequireOwnMetadataFlagAndVerifiedBackend() async throws {
+        for action in [RavadaDesktopPowerAction.hibernate, .resume] {
+            for change in 0..<5 {
+                let f = Fixture(), store = try await readySavedAction(f, action: action)
+                switch change {
+                case 0:
+                    if action == .hibernate { f.hibernatePermission = 0 } else { f.startPermission = 0 }
+                case 1:
+                    if action == .hibernate { f.hibernatePermission = NSNull() } else { f.startPermission = NSNull() }
+                case 2: f.backendType = "Void"
+                case 3: f.backendType = NSNull()
+                default: f.volatile = NSNull()
+                }
+                store.preparePowerAction(try #require(store.rows.first), action: action)
+                try await wait { !store.isBusy }
+                #expect(store.powerConfirmation == nil && store.errorMessage != nil)
+                #expect(f.hibernates == 0 && f.starts == 0)
+                store.deactivate()
+            }
+        }
+    }
+
+    @Test func resumeCannotColdStartAndSavedActionStateIsRevalidated() async throws {
+        for change in 0..<5 {
+            let f = Fixture(), store = try await readySavedAction(f, action: .resume)
+            store.preparePowerAction(try #require(store.rows.first), action: .resume)
+            let confirmation = try await prepared(store)
+            switch change {
+            case 0: f.hibernated = false
+            case 1: f.active = true
+            case 2: f.startPermission = 0
+            case 3: f.validContext = false
+            default: f.backendType = "Unknown"
+            }
+            store.confirmPowerAction(confirmation.id)
+            try await wait { !store.isBusy }
+            #expect(f.starts == 0 && f.resumes == 0 && store.statusMessage == nil)
+            store.deactivate()
+        }
+        let f = Fixture(); f.active = false
+        let store = try await ready(f)
+        store.preparePowerAction(try #require(store.rows.first), action: .resume)
+        try await wait { !store.isBusy }
+        #expect(store.powerConfirmation == nil && f.starts == 0)
+        #expect(store.errorMessage == RavadaBrokerError.resumeUnavailable.localizedDescription)
+        store.deactivate()
+    }
+
+    @Test func savedActionsRejectWrongFinalStateAndBackendFailureWithoutRetry() async throws {
+        for action in [RavadaDesktopPowerAction.hibernate, .resume] {
+            for change in 0..<4 {
+                let f = Fixture(), store = try await readySavedAction(f, action: action)
+                store.preparePowerAction(try #require(store.rows.first), action: action)
+                let confirmation = try await prepared(store)
+                switch change {
+                case 0: f.jobError = "synthetic backend grant denial"
+                case 1: f.wrongHibernationResult = true
+                case 2: f.ambiguous = true
+                default: f.jobStatus = "removing saved image"
+                }
+                store.confirmPowerAction(confirmation.id)
+                try await wait { !store.isBusy }
+                #expect((action == .hibernate ? f.hibernates : f.starts) == 1)
+                #expect(store.statusMessage == nil && store.errorMessage == action.uncertainOutcome.localizedDescription)
+                if change == 1 { #expect(f.stoppingReads == 180) }
+                store.deactivate()
+            }
+        }
+    }
+
+    @Test func savedActionCancellationAndStaleTokensCannotSendOrPublishAgain() async throws {
+        for action in [RavadaDesktopPowerAction.hibernate, .resume] {
+            let f = Fixture(), store = try await readySavedAction(f, action: action)
+            store.preparePowerAction(try #require(store.rows.first), action: action)
+            let cancelled = try await prepared(store)
+            store.cancelPowerConfirmation(); store.confirmPowerAction(cancelled.id)
+            #expect(f.starts == 0 && f.hibernates == 0)
+            store.preparePowerAction(try #require(store.rows.first), action: action)
+            let current = try await prepared(store)
+            f.holdJob = true
+            store.confirmPowerAction(current.id)
+            try await wait { f.jobWaiter != nil }
+            store.cancel()
+            store.confirmPowerAction(cancelled.id); store.confirmPowerAction(current.id)
+            f.jobWaiter?.resume(); f.jobWaiter = nil
+            for _ in 0..<30 { await Task.yield() }
+            #expect((action == .hibernate ? f.hibernates : f.starts) == 1 && f.stoppingReads == 0)
+            #expect(store.statusMessage == nil && store.errorMessage == action.cancellationMessage)
+            store.deactivate()
+        }
+    }
+
+    @Test func backendRestrictionDoesNotChangeAcceptedShutdownOrReboot() async throws {
+        for action in [RavadaDesktopPowerAction.shutdown, .reboot] {
+            let f = Fixture(); f.backendType = NSNull()
+            let store = try await ready(f)
+            store.preparePowerAction(try #require(store.rows.first), action: action)
+            #expect(try await prepared(store).action == action)
+            store.cancelPowerConfirmation(); store.deactivate()
+        }
+    }
+
+    private func readySavedAction(_ f: Fixture, action: RavadaDesktopPowerAction) async throws -> RavadaDesktopStore {
+        if action == .resume { f.active = false; f.hibernated = true; f.acceptStartAsResume = true }
+        return try await ready(f)
+    }
+
     @Test func rebootRequiresItsOwnConfirmationAndNeverSubmitsAnotherAction() async throws {
         let f = Fixture(), store = try await ready(f)
         let row = try #require(store.rows.first)
@@ -272,12 +403,15 @@ extension RavadaDesktopStoreTests {
     @MainActor private final class Fixture {
         var active = true, catalogAllowed = true, validContext = true
         var permission: Any = 1, rebootPermission: Any = 1, volatile: Any = 0
+        var hibernatePermission: Any = 1, startPermission: Any = 1, backendType: Any = "KVM"
         var hibernated = false, pending = false, ambiguous = false, neverStops = false
-        var denySubmission = false, holdJob = false
+        var denySubmission = false, holdJob = false, acceptStartAsResume = false, wrongHibernationResult = false
         var receipt: [String: Any] = ["req": 12]
         var jobID = 12, jobDomain = 42, jobError: Any = NSNull()
+        var jobStatus = "done"
         var jobWaiter: CheckedContinuation<Void, Never>?
-        var shutdowns = 0, reboots = 0, starts = 0, opens = 0, jobReads = 0, stoppingReads = 0
+        var shutdowns = 0, reboots = 0, hibernates = 0, resumes = 0, starts = 0, opens = 0, jobReads = 0, stoppingReads = 0
+        private var expectedJobID = 12
         private var submittedAction: RavadaDesktopPowerAction?
         private var jobDone = false
 
@@ -305,31 +439,54 @@ extension RavadaDesktopStoreTests {
                     stoppingReads += 1
                     if submittedAction == .shutdown, stoppingReads >= 2, !neverStops { active = false }
                     if submittedAction == .reboot, neverStops { active = false }
+                    if submittedAction == .hibernate, stoppingReads >= 2, !neverStops {
+                        active = false; hibernated = !wrongHibernationResult
+                    }
+                    if submittedAction == .resume, stoppingReads >= 2, !neverStops {
+                        active = true; hibernated = wrongHibernationResult
+                    }
                 }
                 return try json(["id": 42, "is_active": active ? 1 : 0, "is_base": 0,
                     "is_hibernated": hibernated ? 1 : 0, "is_volatile": volatile,
                     "can_shutdown": permission, "can_reboot": rebootPermission,
+                    "can_hibernate": hibernatePermission, "can_start": startPermission, "type": backendType,
                     "requests": pending || (jobDone && submittedAction == .reboot && stoppingReads < 2) ? 1 : 0,
                     "hardware": ["display": []]])
-            case .shutdown(let id), .reboot(let id):
+            case .shutdown(let id), .reboot(let id), .hibernate(let id):
                 #expect(id == 42)
-                let action: RavadaDesktopPowerAction = request == .shutdown(id) ? .shutdown : .reboot
-                submittedAction = action
-                if action == .shutdown { shutdowns += 1 } else { reboots += 1 }
-                if ambiguous { throw action.uncertainOutcome }
-                if denySubmission { return try json([:], status: 403) }
-                return try json(receipt)
+                let action: RavadaDesktopPowerAction
+                switch request {
+                case .shutdown: action = .shutdown; shutdowns += 1
+                case .reboot: action = .reboot; reboots += 1
+                default: action = .hibernate; hibernates += 1
+                }
+                return try mutationResponse(action)
             case .job(let id):
-                #expect(id == 12)
+                #expect(id == expectedJobID)
                 jobReads += 1
                 if holdJob { await withCheckedContinuation { jobWaiter = $0 } }
                 jobDone = true
-                return try json(["id": jobID, "status": "done", "error": jobError, "id_domain": jobDomain])
-            case .start:
-                starts += 1; throw RavadaBrokerError.portalRequired
+                return try json(["id": jobID, "status": jobStatus, "error": jobError, "id_domain": jobDomain])
+            case .start(let id):
+                starts += 1
+                guard acceptStartAsResume else { throw RavadaBrokerError.portalRequired }
+                #expect(id == 42 && !active && hibernated, "Resume must never cold-start a stopped VM")
+                resumes += 1
+                return try mutationResponse(.resume)
             case .connection:
-                Issue.record("Shutdown must never fetch a ticket"); throw RavadaBrokerError.portalRequired
+                Issue.record("Power actions must never fetch a ticket"); throw RavadaBrokerError.portalRequired
             }
         }
+        func nextJob(_ id: Int) {
+            expectedJobID = id; jobID = id; receipt = ["req": id]
+            jobDone = false; stoppingReads = 0
+        }
+        private func mutationResponse(_ action: RavadaDesktopPowerAction) throws -> RavadaBrokerResponse {
+            submittedAction = action
+            if ambiguous { throw action == .resume ? RavadaBrokerError.ambiguousStart : action.uncertainOutcome }
+            if denySubmission { return try json([:], status: 403) }
+            return try json(receipt)
+        }
+
     }
 }

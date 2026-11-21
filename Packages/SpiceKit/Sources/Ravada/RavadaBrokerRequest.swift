@@ -8,6 +8,7 @@ public enum RavadaBrokerRequest: Equatable, Sendable {
     case start(Int)
     case shutdown(Int)
     case reboot(Int)
+    case hibernate(Int)
     case job(Int)
     case connection(machineID: Int, driver: String, fileExtension: String)
 
@@ -17,6 +18,7 @@ public enum RavadaBrokerRequest: Equatable, Sendable {
         case .start: .ambiguousStart
         case .shutdown: .ambiguousShutdown
         case .reboot: .ambiguousReboot
+        case .hibernate: .ambiguousHibernate
         default: nil
         }
     }
@@ -29,6 +31,7 @@ public enum RavadaBrokerRequest: Equatable, Sendable {
         case .start(let id): path = "machine/start/\(try valid(id)).json"
         case .shutdown(let id): path = "machine/shutdown/\(try valid(id)).json"
         case .reboot(let id): path = "machine/reboot/\(try valid(id)).json"
+        case .hibernate(let id): path = "machine/hibernate/\(try valid(id)).json"
         case .job(let id): path = "request/\(try valid(id)).json"
         case .connection(let id, let driver, let ext):
             guard (driver == "spice-tls" && ext == "tls.vv") || (driver == "spice" && ext == "vv") else {

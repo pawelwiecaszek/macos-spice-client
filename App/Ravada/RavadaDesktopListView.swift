@@ -95,8 +95,8 @@ struct RavadaDesktopListView: View {
                             Menu("Actions", systemImage: "ellipsis.circle") {
                                 ForEach(RavadaDesktopPowerAction.allCases, id: \.self) { action in
                                     Button(action.title + "…", role: .destructive) { store.preparePowerAction(row, action: action) }
-                                        .disabled(row.machine.isActive != true)
-                                        .accessibilityIdentifier("\(action == .shutdown ? "shutdownRavadaDesktop" : "rebootRavadaDesktop")-\(row.id)")
+                                        .disabled(!action.canPrepare(row))
+                                        .accessibilityIdentifier("\(action.accessibilityPrefix)-\(row.id)")
                                 }
                                 Button("Open in Portal", action: openPortal)
                             }

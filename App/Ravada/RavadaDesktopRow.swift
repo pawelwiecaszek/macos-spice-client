@@ -9,7 +9,8 @@ struct RavadaDesktopRow: Identifiable, Equatable {
     var name: String { machine.alias.flatMap { $0.isEmpty ? nil : $0 } ?? machine.name }
     var stateLabel: String {
         if portalOnly { return String(localized: "Use Portal") }
-        return machine.isActive == true ? String(localized: "Running") : String(localized: "Stopped")
+        // The ordinary catalog omits managed-save state: inactive does not mean cold-stopped.
+        return machine.isActive == true ? String(localized: "Running") : String(localized: "Not running")
     }
 
     static func rows(in catalog: RavadaCatalog) throws -> [Self] {

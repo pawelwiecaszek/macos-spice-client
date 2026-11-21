@@ -52,7 +52,8 @@ struct RavadaBrokerTests {
 
     @Test func powerTransportFailuresKeepActionSpecificGuidanceWithoutRetry() async throws {
         for (request, expected, route) in [(RavadaBrokerRequest.shutdown(42), RavadaBrokerError.ambiguousShutdown, "shutdown"),
-                                           (.reboot(42), .ambiguousReboot, "reboot")] {
+                                           (.reboot(42), .ambiguousReboot, "reboot"),
+                                           (.hibernate(42), .ambiguousHibernate, "hibernate")] {
           for failure in ["throw", "timeout", "unknown"] {
             var sends = 0
             let transport = try RavadaBrowserTransport(portalURL: portal, pageURL: { page }) { _, arguments in

@@ -3,6 +3,26 @@ import Testing
 @testable import Ravada
 
 struct RavadaConnectTests {
+    @Test func hibernateRouteIsFixedAndCannotForceOrUsePausedResume() throws {
+        let endpoint = try RavadaEndpoint(portalURL: #require(URL(string: "https://portal.example.invalid/vdi/")))
+        let request = RavadaBrokerRequest.hibernate(42)
+        let url = try request.url(using: endpoint)
+        #expect(url.path == "/vdi/machine/hibernate/42.json" && url.query == nil)
+        #expect(request.isMutation && request.uncertainMutationError == .ambiguousHibernate)
+        #expect(throws: RavadaBrokerError.invalidResponse) { try RavadaBrokerRequest.hibernate(-1).url(using: endpoint) }
+    }
+
+    @Test func savedStateMetadataPreservesUnknownFlagsAndBackend() throws {
+        func info(_ fields: String) throws -> RavadaMachineInfo {
+            try response("{\"id\":42,\"is_active\":0,\"is_base\":0,\"requests\":0,\"hardware\":{\"display\":[]}\(fields)}").decode(RavadaMachineInfo.self)
+        }
+        let known = try info(#", "can_hibernate":"1", "can_start":true, "type":"KVM", "is_hibernated":"1""#)
+        #expect(known.canHibernate == true && known.canStart == true && known.backendType == "KVM" && known.isHibernated == true)
+        let unknown = try info(#", "can_hibernate":"future", "can_start":null, "type":{}, "is_hibernated":2"#)
+        #expect(unknown.canHibernate == nil && unknown.canStart == nil && unknown.backendType == nil && unknown.isHibernated == nil)
+        let missing = try info("")
+        #expect(missing.canHibernate == nil && missing.canStart == nil && missing.backendType == nil)
+    }
     @Test func rebootHasFixedNonForceRouteAndIndependentMetadataPermission() throws {
         let endpoint = try RavadaEndpoint(portalURL: #require(URL(string: "https://portal.example.invalid:8443/vdi/")))
         let request = RavadaBrokerRequest.reboot(42)

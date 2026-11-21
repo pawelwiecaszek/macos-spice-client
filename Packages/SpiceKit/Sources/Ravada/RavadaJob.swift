@@ -5,7 +5,7 @@ public struct RavadaStartReceipt: Decodable, Sendable {
     public let req: Int
 }
 
-/// Shutdown/reboot JSON handlers return the same request receipt, without a force query.
+/// Verified power-action JSON handlers return the same request receipt.
 public struct RavadaPowerReceipt: Decodable, Sendable {
     public let req: Int
 }

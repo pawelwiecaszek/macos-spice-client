@@ -142,7 +142,7 @@ final class RavadaDesktopStore: NSObject {
 
     /// Permission discovery is read-only with respect to power. No power mutation until confirmed.
     func preparePowerAction(_ row: RavadaDesktopRow, action: RavadaDesktopPowerAction) {
-        guard isVisible, !isBusy, !row.portalOnly, row.machine.isActive == true,
+        guard isVisible, !isBusy, !row.portalOnly, action.canPrepare(row),
               rows.contains(where: { $0.id == row.id && !$0.portalOnly }) else { return }
         let token = UUID(); generation = token
         powerActionID = row.id; errorMessage = nil; statusMessage = nil
@@ -198,7 +198,9 @@ final class RavadaDesktopStore: NSObject {
         guard action.permission(info) == true else {
             throw action.permission(info) == false ? RavadaBrokerError.permissionDenied : action.unavailable
         }
-        guard info.isActive == true, info.isHibernated == false, info.isVolatile == false else {
+        guard info.isActive == action.initialActiveState,
+              info.isHibernated == action.initialHibernatedState,
+              info.isVolatile == false, action.supportsBackend(info) else {
             throw action.unavailable
         }
     }
@@ -240,7 +242,8 @@ final class RavadaDesktopStore: NSObject {
             try ensureCurrent(token, deadline: deadline)
             let info = try await machineInfo(id, token: token)
             try ensureCurrent(token, deadline: deadline)
-            if info.isActive == action.expectedActiveState, info.requests == 0, info.isHibernated == false {
+            if info.isActive == action.expectedActiveState, info.requests == 0,
+               info.isHibernated == action.expectedHibernatedState {
                 try await verifyCatalog(id, token: token)
                 try ensureCurrent(token, deadline: deadline)
                 return
@@ -255,6 +258,7 @@ final class RavadaDesktopStore: NSObject {
         let deadline = ContinuousClock.now.advanced(by: .seconds(90))
         try await verifyCatalog(machineID, token: token)
         var info = try await idleMachineInfo(machineID, token: token, deadline: deadline)
+        if info.isHibernated == true { throw RavadaBrokerError.resumeRequired }
         guard info.isHibernated == false,
               info.preferredDisplay != nil else { throw RavadaBrokerError.portalRequired }
         if info.isActive == false {
