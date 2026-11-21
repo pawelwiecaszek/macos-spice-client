@@ -207,5 +207,9 @@ unavailable states (443 package tests, 185 hosted tests). The Release build veri
 and review is complete. The user accepted the final no-reader menu checks on
 build `2d1b1fb`; physical card acceptance remains unavailable. C5 functional
 acceptance is complete for the tested deployment, with physical smartcards and
-broader hardware/guest combinations explicitly unverified. Release installation
-and the dependency-stacked draft PR follow this acceptance checkpoint.
+broader hardware/guest combinations explicitly unverified. Build `2d1b1fb`,
+including refreshed offline Help, is installed; the prior C4 bundle was backed up
+and the installed executable/signature verified. C5 is published as
+[draft PR #11](https://github.com/pawelwiecaszek/macos-spice-client/pull/11),
+dependent on #10 with an incremental comparison for review. The final Apple HIG
+audit remains scheduled after the agreed functional phases.
