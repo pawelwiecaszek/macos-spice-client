@@ -71,4 +71,4 @@ instrumented memory-integrity trace or validation of other roles/backends.
 The cold-start fallback was not exercised, and its confirmation/Help warning stays
 in place. Neither a successful job nor running metadata proves memory restored on
 future attempts. Shutdown/Reboot acceptance remains recorded separately. The final
-Phase 6 release checkpoint follows in the development roadmap.
+Phase 6 release checkpoint is recorded in the [roadmap](DEVELOPMENT_ROADMAP.md).

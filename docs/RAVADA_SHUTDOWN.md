@@ -77,9 +77,9 @@ tested Ravada 2.4.6 deployment. It does not establish live denied-account behavi
 volatile-machine handling, timeout/forced-power-off behavior or broader roles and
 server versions; those negative branches have simulated coverage.
 
-The installed C5 application and published PR #11 remain unchanged. Phase 6 stays
-local while remaining actions are implemented and accepted. Server mutation always
-requires the user's explicit in-app confirmation on a desktop with saved work.
+The final Phase 6 installation/publication checkpoint is recorded in the
+[roadmap](DEVELOPMENT_ROADMAP.md). Server mutation always requires the user's
+explicit in-app confirmation on a desktop with saved work.
 
 Live acceptance sequence: cancel the first shutdown confirmation and verify the
 VDI remains usable; then explicitly confirm shutdown of a disposable/saved desktop,

@@ -64,5 +64,5 @@ validation of every guest/backend/permission role.
 A viewer disconnect is not required. The app's result message still reports only
 request completion/running state; this live result does not justify claiming guest
 boot verification from metadata alone. If a future reboot is uncertain, check the
-portal and guest before another request. Reboot and shutdown stay local while
-remaining Phase 6 actions are developed; C5 remains installed.
+portal and guest before another request. The final Phase 6 installation/publication
+checkpoint is recorded in the [roadmap](DEVELOPMENT_ROADMAP.md).

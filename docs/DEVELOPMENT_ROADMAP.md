@@ -246,4 +246,23 @@ plus viewer Reconnect with the unsaved marker preserved and working input on bui
 `6871dea`. This completes functional Phase 6 acceptance on the tested deployment.
 Paused-VM Resume, force/reset and other backends remain in the portal; live denied
 roles, cold-start fallback and broader deployment coverage remain unverified.
-Installation and the dependent draft PR follow this acceptance checkpoint.
+The final installation/publication checkpoint below records release status.
+
+## Phase 6 installed and published checkpoint
+
+The accepted build `6871dea` is installed in `/Applications/MacOS Spice Client.app`,
+including current offline Help. The previous C5 bundle was backed up and its archive
+checked; the installed signature and executable hash match the accepted test build.
+Version 0.1/build 1 remain unchanged. The running separate test session was left
+untouched.
+
+[Draft PR #12](https://github.com/pawelwiecaszek/macos-spice-client/pull/12) contains
+the four confirmed power actions and depends on #11, with a Phase 6-only incremental
+comparison. All 448 package and 207 hosted tests pass; independent slice reviews and
+signed Release verification pass. User-reported functional acceptance covers all
+Cancel and positive paths on the tested Ravada 2.4.6 KVM deployment. Paused-VM
+Resume, force/reset and unverified backends/roles remain outside this acceptance.
+
+Next is C6's measured video-efficiency baseline, followed by only justified
+optimizations. The final Apple HIG audit remains scheduled after the agreed
+functional phases; optional extensions are separately scoped.
