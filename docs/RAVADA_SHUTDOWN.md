@@ -68,9 +68,17 @@ notification interference. The Release build passes with Swift compiler warnings
 treated as errors and its signature verifies. Independent review found no
 outstanding issues.
 
-No live shutdown has been performed for this slice. The installed C5 application
-and published PR #11 remain unchanged. Physical server mutation requires the
-user's explicit in-app confirmation on a desktop with saved work.
+The user accepted the live sequence on build `a74a32f`: cancelling confirmation
+left the existing VDI connected and usable; explicitly confirming shutdown ended
+the viewer session and displayed the stopped-state confirmation; My Desktops →
+Connect then started/reopened the desktop and input worked. This accepts the
+tested Ravada 2.4.6 deployment. It does not establish live denied-account behavior,
+volatile-machine handling, timeout/forced-power-off behavior or broader roles and
+server versions; those negative branches have simulated coverage.
+
+The installed C5 application and published PR #11 remain unchanged. Phase 6 stays
+local while remaining actions are implemented and accepted. Server mutation always
+requires the user's explicit in-app confirmation on a desktop with saved work.
 
 Live acceptance sequence: cancel the first shutdown confirmation and verify the
 VDI remains usable; then explicitly confirm shutdown of a disposable/saved desktop,

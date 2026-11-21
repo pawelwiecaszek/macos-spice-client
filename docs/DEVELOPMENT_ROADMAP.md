@@ -220,5 +220,8 @@ The ordinary catalog's can_shutdown flag is not authorization; fresh machine-inf
 permission and known nonvolatile state are required before and after confirmation.
 One fixed shutdown request is followed by matching-job and stopped-state checks.
 Ravada may force power off after its server timeout, so this is not described as
-guaranteed graceful shutdown. Other power actions remain portal-only. Automated
-verification and a separate test build precede live acceptance; C5 stays installed.
+guaranteed graceful shutdown. The user accepted cancel-with-VDI-preserved,
+confirmed shutdown/stopped-state reporting, and explicit Connect to start/reopen
+with working input on build `a74a32f`. All 445 package tests and 195 hosted tests
+pass; review and the signed Release build pass. Other power actions remain
+portal-only; Phase 6 stays local and C5 stays installed until the phase is ready.
