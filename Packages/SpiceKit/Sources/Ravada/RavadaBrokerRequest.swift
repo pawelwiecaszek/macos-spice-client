@@ -1,12 +1,13 @@
 import Foundation
 
-/// Only these release-verified broker routes are constructible. Start and shutdown
+/// Only these release-verified broker routes are constructible. Power actions
 /// mutate despite using GET in Ravada 2.4.6; never replay them automatically.
 public enum RavadaBrokerRequest: Equatable, Sendable {
     case catalog
     case machineInfo(Int)
     case start(Int)
     case shutdown(Int)
+    case reboot(Int)
     case job(Int)
     case connection(machineID: Int, driver: String, fileExtension: String)
 
@@ -15,6 +16,7 @@ public enum RavadaBrokerRequest: Equatable, Sendable {
         switch self {
         case .start: .ambiguousStart
         case .shutdown: .ambiguousShutdown
+        case .reboot: .ambiguousReboot
         default: nil
         }
     }
@@ -26,6 +28,7 @@ public enum RavadaBrokerRequest: Equatable, Sendable {
         case .machineInfo(let id): path = "machine/info/\(try valid(id)).json"
         case .start(let id): path = "machine/start/\(try valid(id)).json"
         case .shutdown(let id): path = "machine/shutdown/\(try valid(id)).json"
+        case .reboot(let id): path = "machine/reboot/\(try valid(id)).json"
         case .job(let id): path = "request/\(try valid(id)).json"
         case .connection(let id, let driver, let ext):
             guard (driver == "spice-tls" && ext == "tls.vv") || (driver == "spice" && ext == "vv") else {

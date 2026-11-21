@@ -5,8 +5,8 @@ public struct RavadaStartReceipt: Decodable, Sendable {
     public let req: Int
 }
 
-/// /machine/shutdown/{id}.json without a force query (rvd_front:4587–4604).
-public struct RavadaShutdownReceipt: Decodable, Sendable {
+/// Shutdown/reboot JSON handlers return the same request receipt, without a force query.
+public struct RavadaPowerReceipt: Decodable, Sendable {
     public let req: Int
 }
 

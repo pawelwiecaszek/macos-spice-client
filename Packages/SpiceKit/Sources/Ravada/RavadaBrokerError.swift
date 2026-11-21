@@ -17,6 +17,8 @@ public enum RavadaBrokerError: Error, Equatable, Sendable, LocalizedError {
     case ambiguousStart
     case ambiguousShutdown
     case shutdownUnavailable
+    case ambiguousReboot
+    case rebootUnavailable
     case cancelled
 
     public var errorDescription: String? {
@@ -36,6 +38,8 @@ public enum RavadaBrokerError: Error, Equatable, Sendable, LocalizedError {
         case .ambiguousStart: "The start request may still be running on Ravada. Check the portal before trying again."
         case .ambiguousShutdown: "Shutdown could not be confirmed and may still continue in Ravada. Check the portal before submitting another request."
         case .shutdownUnavailable: "Shutdown is unavailable for this desktop's permissions or state. Use the portal to continue."
+        case .ambiguousReboot: "Reboot could not be confirmed and may still continue in Ravada. Check the portal and guest before submitting another request."
+        case .rebootUnavailable: "Reboot is unavailable for this desktop's permissions or state. Use the portal to continue."
         case .cancelled: "The Ravada request was cancelled."
         }
     }

@@ -3,6 +3,20 @@ import Testing
 @testable import Ravada
 
 struct RavadaConnectTests {
+    @Test func rebootHasFixedNonForceRouteAndIndependentMetadataPermission() throws {
+        let endpoint = try RavadaEndpoint(portalURL: #require(URL(string: "https://portal.example.invalid:8443/vdi/")))
+        let request = RavadaBrokerRequest.reboot(42)
+        let url = try request.url(using: endpoint)
+        #expect(url.absoluteString == "https://portal.example.invalid:8443/vdi/machine/reboot/42.json")
+        #expect(url.query == nil && request.isMutation)
+        #expect(request.uncertainMutationError == .ambiguousReboot)
+        #expect(throws: RavadaBrokerError.invalidResponse) { try RavadaBrokerRequest.reboot(0).url(using: endpoint) }
+        for (field, expected) in [("", nil), (#", "can_reboot":true"#, true),
+                                  (#", "can_reboot":0"#, false), (#", "can_reboot":"future""#, nil)] as [(String, Bool?)] {
+            let info = try response("{\"id\":42,\"is_active\":1,\"is_base\":0,\"requests\":0,\"can_shutdown\":1,\"hardware\":{\"display\":[]}\(field)}").decode(RavadaMachineInfo.self)
+            #expect(info.canShutdown == true && info.canReboot == expected)
+        }
+    }
     @Test func shutdownUsesOnlyFixedNonForceRouteAndItsOwnUncertainOutcome() throws {
         let endpoint = try RavadaEndpoint(portalURL: #require(URL(string: "https://portal.example.invalid:8443/vdi/")))
         let url = try RavadaBrokerRequest.shutdown(42).url(using: endpoint)

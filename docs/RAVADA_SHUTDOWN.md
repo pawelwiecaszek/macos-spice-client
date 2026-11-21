@@ -1,8 +1,9 @@
 # Phase 6: confirmed Ravada shutdown
 
 First scope: My Desktops → Actions → Shut Down for an authorized running,
-nonvolatile machine. Reboot, force shutdown, resume/hibernate and VDI-toolbar power
-controls remain portal-only. Closing a VDI never submits a power action.
+nonvolatile machine. [Reboot follows as a separate local slice](RAVADA_REBOOT.md).
+Force shutdown, resume/hibernate and VDI-toolbar power controls remain portal-only.
+Closing a VDI never submits a power action.
 
 ## Pinned server contract
 

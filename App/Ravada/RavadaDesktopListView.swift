@@ -93,9 +93,11 @@ struct RavadaDesktopListView: View {
                                 .disabled(store.isBusy)
                                 .accessibilityIdentifier("connectRavadaDesktop-\(row.id)")
                             Menu("Actions", systemImage: "ellipsis.circle") {
-                                Button("Shut Down…", role: .destructive) { store.prepareShutdown(row) }
-                                    .disabled(row.machine.isActive != true)
-                                    .accessibilityIdentifier("shutdownRavadaDesktop-\(row.id)")
+                                ForEach(RavadaDesktopPowerAction.allCases, id: \.self) { action in
+                                    Button(action.title + "…", role: .destructive) { store.preparePowerAction(row, action: action) }
+                                        .disabled(row.machine.isActive != true)
+                                        .accessibilityIdentifier("\(action == .shutdown ? "shutdownRavadaDesktop" : "rebootRavadaDesktop")-\(row.id)")
+                                }
                                 Button("Open in Portal", action: openPortal)
                             }
                             .disabled(store.isBusy)
@@ -108,14 +110,15 @@ struct RavadaDesktopListView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .alert("Shut Down Desktop?", isPresented: Binding(
-            get: { store.shutdownConfirmation != nil },
-            set: { if !$0 { store.cancelShutdownConfirmation() } }),
-            presenting: store.shutdownConfirmation) { confirmation in
-                Button("Shut Down", role: .destructive) { store.confirmShutdown(confirmation.id) }
-                Button("Cancel", role: .cancel) { store.cancelShutdownConfirmation() }
+        .alert(store.powerConfirmation?.action.confirmationTitle ?? String(localized: "Desktop Action"), isPresented: Binding(
+            get: { store.powerConfirmation != nil },
+            set: { if !$0 { store.cancelPowerConfirmation() } }),
+            presenting: store.powerConfirmation) { confirmation in
+                Button(confirmation.action.title, role: .destructive) { store.confirmPowerAction(confirmation.id) }
+                Button("Cancel", role: .cancel) { store.cancelPowerConfirmation() }
             } message: { confirmation in
-                Text("Shut down “\(confirmation.name)” (machine \(confirmation.machineID)) in \(store.profileName)? Save your work first. Connected viewers will disconnect. Ravada may force power off after its configured timeout. Cancelling monitoring after submission does not cancel the server request.")
+                Text(confirmation.action.confirmationMessage(name: confirmation.name,
+                    machineID: confirmation.machineID, profileName: store.profileName))
             }
     }
 }

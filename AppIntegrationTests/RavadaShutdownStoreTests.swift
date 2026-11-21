@@ -6,14 +6,119 @@ import Testing
 @MainActor
 // Share the existing serialized suite: hide/unhide tests broadcast app-wide notifications.
 extension RavadaDesktopStoreTests {
+    @Test func rebootRequiresItsOwnConfirmationAndNeverSubmitsAnotherAction() async throws {
+        let f = Fixture(), store = try await ready(f)
+        let row = try #require(store.rows.first)
+        store.preparePowerAction(row, action: .reboot)
+        store.preparePowerAction(row, action: .shutdown)
+        let confirmation = try await prepared(store)
+        #expect(confirmation.action == .reboot && f.reboots == 0 && f.shutdowns == 0)
+        store.connect(row)
+        store.confirmPowerAction(confirmation.id); store.confirmPowerAction(confirmation.id)
+        try await wait { !store.isBusy }
+        #expect(f.reboots == 1 && f.shutdowns == 0 && f.starts == 0 && f.opens == 0)
+        #expect(f.stoppingReads == 2 && store.rows.first?.machine.isActive == true)
+        #expect(store.statusMessage == RavadaDesktopPowerAction.reboot.successMessage)
+        #expect(store.errorMessage == nil)
+        store.deactivate()
+    }
+
+    @Test func rebootCannotInheritShutdownPermissionOrUnknownMetadata() async throws {
+        for permission in [0, NSNull(), "future"] as [Any] {
+            let f = Fixture(); f.rebootPermission = permission
+            let store = try await ready(f)
+            store.preparePowerAction(try #require(store.rows.first), action: .reboot)
+            try await wait { !store.isBusy }
+            #expect(f.reboots == 0 && f.shutdowns == 0 && store.powerConfirmation == nil)
+            #expect(store.errorMessage != nil)
+            store.deactivate()
+        }
+    }
+
+    @Test func rebootRevalidatesPermissionContextAndStateAfterConfirmation() async throws {
+        for change in 0..<6 {
+            let f = Fixture(), store = try await ready(f)
+            store.preparePowerAction(try #require(store.rows.first), action: .reboot)
+            let confirmation = try await prepared(store)
+            switch change {
+            case 0: f.rebootPermission = 0
+            case 1: f.validContext = false
+            case 2: f.catalogAllowed = false
+            case 3: f.volatile = 1
+            case 4: f.hibernated = true
+            default: f.active = false
+            }
+            store.confirmPowerAction(confirmation.id)
+            try await wait { !store.isBusy }
+            #expect(f.reboots == 0 && f.shutdowns == 0 && store.statusMessage == nil)
+            #expect(store.errorMessage != nil)
+            store.deactivate()
+        }
+    }
+
+    @Test func cancelledRebootTokenCannotConfirmReplacementShutdown() async throws {
+        let f = Fixture(), store = try await ready(f)
+        let row = try #require(store.rows.first)
+        store.preparePowerAction(row, action: .reboot)
+        let old = try await prepared(store)
+        store.cancelPowerConfirmation()
+        store.preparePowerAction(row, action: .shutdown)
+        let replacement = try await prepared(store)
+        store.confirmPowerAction(old.id)
+        #expect(store.powerConfirmation?.action == .shutdown && f.reboots == 0 && f.shutdowns == 0)
+        store.confirmPowerAction(replacement.id)
+        try await wait { !store.isBusy }
+        #expect(f.shutdowns == 1 && f.reboots == 0 && store.rows.first?.machine.isActive == false)
+        store.deactivate()
+    }
+
+    @Test func ambiguousFailedOrIncompleteRebootNeverRetriesOrReportsSuccess() async throws {
+        for change in 0..<5 {
+            let f = Fixture(), store = try await ready(f)
+            store.preparePowerAction(try #require(store.rows.first), action: .reboot)
+            let confirmation = try await prepared(store)
+            switch change {
+            case 0: f.ambiguous = true
+            case 1: f.receipt = [:]
+            case 2: f.jobDomain = 43
+            case 3: f.neverStops = true
+            default: f.denySubmission = true
+            }
+            store.confirmPowerAction(confirmation.id)
+            try await wait { !store.isBusy }
+            #expect(f.reboots == 1 && f.shutdowns == 0 && store.statusMessage == nil)
+            #expect(store.errorMessage == (change == 4 ? RavadaBrokerError.permissionDenied : .ambiguousReboot).localizedDescription)
+            if change == 3 { #expect(f.stoppingReads == 180) }
+            store.deactivate()
+        }
+    }
+
+    @Test func cancellingSubmittedRebootPreservesItsWarningAndDiscardsLateJob() async throws {
+        let f = Fixture(), store = try await ready(f)
+        f.holdJob = true
+        store.preparePowerAction(try #require(store.rows.first), action: .reboot)
+        let confirmation = try await prepared(store)
+        store.confirmPowerAction(confirmation.id)
+        try await wait { f.jobWaiter != nil }
+        store.cancel()
+        #expect(store.errorMessage == RavadaDesktopPowerAction.reboot.cancellationMessage)
+        store.confirmPowerAction(confirmation.id)
+        f.jobWaiter?.resume(); f.jobWaiter = nil
+        for _ in 0..<30 { await Task.yield() }
+        #expect(f.reboots == 1 && f.shutdowns == 0 && f.stoppingReads == 0)
+        #expect(store.statusMessage == nil && !store.isBusy)
+        #expect(store.errorMessage == RavadaDesktopPowerAction.reboot.cancellationMessage)
+        store.deactivate()
+    }
+
     @Test func confirmationIsRequiredAndDuplicateActionsNeverSendTwice() async throws {
         let f = Fixture(), store = try await ready(f)
         let row = try #require(store.rows.first)
-        store.prepareShutdown(row); store.prepareShutdown(row)
+        store.preparePowerAction(row, action: .shutdown); store.preparePowerAction(row, action: .shutdown)
         let confirmation = try await prepared(store)
         #expect(f.shutdowns == 0 && store.isBusy)
         store.connect(row)
-        store.confirmShutdown(confirmation.id); store.confirmShutdown(confirmation.id)
+        store.confirmPowerAction(confirmation.id); store.confirmPowerAction(confirmation.id)
         try await wait { !store.isBusy }
         #expect(f.shutdowns == 1 && f.opens == 0 && f.starts == 0)
         #expect(f.stoppingReads == 2, "A successful job alone must not mean the guest stopped")
@@ -24,17 +129,17 @@ extension RavadaDesktopStoreTests {
 
     @Test func cancellingOrReusingConfirmationCannotSubmitShutdown() async throws {
         let f = Fixture(), store = try await ready(f)
-        store.prepareShutdown(try #require(store.rows.first))
+        store.preparePowerAction(try #require(store.rows.first), action: .shutdown)
         let old = try await prepared(store)
-        store.cancelShutdownConfirmation()
-        store.confirmShutdown(old.id)
+        store.cancelPowerConfirmation()
+        store.confirmPowerAction(old.id)
         #expect(f.shutdowns == 0 && !store.isBusy)
-        store.prepareShutdown(try #require(store.rows.first))
+        store.preparePowerAction(try #require(store.rows.first), action: .shutdown)
         let replacement = try await prepared(store)
-        store.confirmShutdown(old.id)
-        #expect(store.shutdownConfirmation?.id == replacement.id && f.shutdowns == 0)
+        store.confirmPowerAction(old.id)
+        #expect(store.powerConfirmation?.id == replacement.id && f.shutdowns == 0)
         store.deactivate()
-        store.confirmShutdown(replacement.id)
+        store.confirmPowerAction(replacement.id)
         #expect(f.shutdowns == 0)
     }
 
@@ -42,9 +147,9 @@ extension RavadaDesktopStoreTests {
         for permission in [0, NSNull(), "future"] as [Any] {
             let f = Fixture(); f.permission = permission
             let store = try await ready(f)
-            store.prepareShutdown(try #require(store.rows.first))
+            store.preparePowerAction(try #require(store.rows.first), action: .shutdown)
             try await wait { !store.isBusy }
-            #expect(store.shutdownConfirmation == nil && store.errorMessage != nil)
+            #expect(store.powerConfirmation == nil && store.errorMessage != nil)
             #expect(f.shutdowns == 0)
             store.deactivate()
         }
@@ -53,7 +158,7 @@ extension RavadaDesktopStoreTests {
     @Test func permissionAccessAndStateAreRevalidatedAfterConfirmation() async throws {
         for change in 0..<6 {
             let f = Fixture(), store = try await ready(f)
-            store.prepareShutdown(try #require(store.rows.first))
+            store.preparePowerAction(try #require(store.rows.first), action: .shutdown)
             let confirmation = try await prepared(store)
             switch change {
             case 0: f.permission = 0
@@ -63,7 +168,7 @@ extension RavadaDesktopStoreTests {
             case 4: f.active = false
             default: f.validContext = false // Profile/address/login-store admission was revoked.
             }
-            store.confirmShutdown(confirmation.id)
+            store.confirmPowerAction(confirmation.id)
             try await wait { !store.isBusy }
             #expect(f.shutdowns == 0 && store.statusMessage == nil && store.errorMessage != nil)
             store.deactivate()
@@ -80,9 +185,9 @@ extension RavadaDesktopStoreTests {
             default: f.pending = true
             }
             let store = try await ready(f)
-            store.prepareShutdown(try #require(store.rows.first))
+            store.preparePowerAction(try #require(store.rows.first), action: .shutdown)
             try await wait { !store.isBusy }
-            #expect(store.shutdownConfirmation == nil && f.shutdowns == 0)
+            #expect(store.powerConfirmation == nil && f.shutdowns == 0)
             store.deactivate()
         }
     }
@@ -90,11 +195,11 @@ extension RavadaDesktopStoreTests {
     @Test func ambiguousOrMalformedReceiptIsNeverRetried() async throws {
         for change in 0..<3 {
             let f = Fixture(), store = try await ready(f)
-            store.prepareShutdown(try #require(store.rows.first))
+            store.preparePowerAction(try #require(store.rows.first), action: .shutdown)
             let confirmation = try await prepared(store)
             if change == 0 { f.ambiguous = true }
             else { f.receipt = change == 1 ? [:] : ["req": 0] }
-            store.confirmShutdown(confirmation.id)
+            store.confirmPowerAction(confirmation.id)
             try await wait { !store.isBusy }
             #expect(f.shutdowns == 1 && f.jobReads == 0)
             #expect(store.errorMessage == RavadaBrokerError.ambiguousShutdown.localizedDescription)
@@ -106,7 +211,7 @@ extension RavadaDesktopStoreTests {
     @Test func failedOrMismatchedJobsAndUnstoppedMachineCannotReportSuccess() async throws {
         for change in 0..<4 {
             let f = Fixture(), store = try await ready(f)
-            store.prepareShutdown(try #require(store.rows.first))
+            store.preparePowerAction(try #require(store.rows.first), action: .shutdown)
             let confirmation = try await prepared(store)
             switch change {
             case 0: f.jobID = 13
@@ -114,7 +219,7 @@ extension RavadaDesktopStoreTests {
             case 2: f.jobError = "synthetic failure"
             default: f.neverStops = true
             }
-            store.confirmShutdown(confirmation.id)
+            store.confirmPowerAction(confirmation.id)
             try await wait { !store.isBusy }
             #expect(f.shutdowns == 1 && store.statusMessage == nil)
             #expect(store.errorMessage == RavadaBrokerError.ambiguousShutdown.localizedDescription)
@@ -126,8 +231,8 @@ extension RavadaDesktopStoreTests {
     @Test func leavingPageCancelsMonitoringWithoutReplayingOrPublishingLateResults() async throws {
         let f = Fixture(), store = try await ready(f)
         f.holdJob = true
-        store.prepareShutdown(try #require(store.rows.first))
-        store.confirmShutdown(try await prepared(store).id)
+        store.preparePowerAction(try #require(store.rows.first), action: .shutdown)
+        store.confirmPowerAction(try await prepared(store).id)
         try await wait { f.jobWaiter != nil }
         store.deactivate()
         f.jobWaiter?.resume(); f.jobWaiter = nil
@@ -139,8 +244,8 @@ extension RavadaDesktopStoreTests {
     @Test func explicitDenialAtSubmissionRemainsPermissionFailure() async throws {
         let f = Fixture(), store = try await ready(f)
         f.denySubmission = true
-        store.prepareShutdown(try #require(store.rows.first))
-        store.confirmShutdown(try await prepared(store).id)
+        store.preparePowerAction(try #require(store.rows.first), action: .shutdown)
+        store.confirmPowerAction(try await prepared(store).id)
         try await wait { !store.isBusy }
         #expect(f.shutdowns == 1 && f.jobReads == 0)
         #expect(store.errorMessage == RavadaBrokerError.permissionDenied.localizedDescription)
@@ -152,9 +257,9 @@ extension RavadaDesktopStoreTests {
         try await wait { !store.isBusy }
         return store
     }
-    private func prepared(_ store: RavadaDesktopStore) async throws -> RavadaDesktopStore.ShutdownConfirmation {
-        try await wait { store.shutdownConfirmation != nil || !store.isBusy }
-        return try #require(store.shutdownConfirmation)
+    private func prepared(_ store: RavadaDesktopStore) async throws -> RavadaDesktopStore.PowerConfirmation {
+        try await wait { store.powerConfirmation != nil || !store.isBusy }
+        return try #require(store.powerConfirmation)
     }
     private func wait(_ predicate: () -> Bool) async throws {
         for _ in 0..<20_000 {
@@ -166,13 +271,14 @@ extension RavadaDesktopStoreTests {
 
     @MainActor private final class Fixture {
         var active = true, catalogAllowed = true, validContext = true
-        var permission: Any = 1, volatile: Any = 0
+        var permission: Any = 1, rebootPermission: Any = 1, volatile: Any = 0
         var hibernated = false, pending = false, ambiguous = false, neverStops = false
         var denySubmission = false, holdJob = false
         var receipt: [String: Any] = ["req": 12]
         var jobID = 12, jobDomain = 42, jobError: Any = NSNull()
         var jobWaiter: CheckedContinuation<Void, Never>?
-        var shutdowns = 0, starts = 0, opens = 0, jobReads = 0, stoppingReads = 0
+        var shutdowns = 0, reboots = 0, starts = 0, opens = 0, jobReads = 0, stoppingReads = 0
+        private var submittedAction: RavadaDesktopPowerAction?
         private var jobDone = false
 
         func store() -> RavadaDesktopStore {
@@ -197,16 +303,20 @@ extension RavadaDesktopStoreTests {
                 #expect(id == 42)
                 if jobDone {
                     stoppingReads += 1
-                    if stoppingReads >= 2 && !neverStops { active = false }
+                    if submittedAction == .shutdown, stoppingReads >= 2, !neverStops { active = false }
+                    if submittedAction == .reboot, neverStops { active = false }
                 }
                 return try json(["id": 42, "is_active": active ? 1 : 0, "is_base": 0,
                     "is_hibernated": hibernated ? 1 : 0, "is_volatile": volatile,
-                    "can_shutdown": permission, "requests": pending ? 1 : 0,
+                    "can_shutdown": permission, "can_reboot": rebootPermission,
+                    "requests": pending || (jobDone && submittedAction == .reboot && stoppingReads < 2) ? 1 : 0,
                     "hardware": ["display": []]])
-            case .shutdown(let id):
+            case .shutdown(let id), .reboot(let id):
                 #expect(id == 42)
-                shutdowns += 1
-                if ambiguous { throw RavadaBrokerError.ambiguousShutdown }
+                let action: RavadaDesktopPowerAction = request == .shutdown(id) ? .shutdown : .reboot
+                submittedAction = action
+                if action == .shutdown { shutdowns += 1 } else { reboots += 1 }
+                if ambiguous { throw action.uncertainOutcome }
                 if denySubmission { return try json([:], status: 403) }
                 return try json(receipt)
             case .job(let id):
