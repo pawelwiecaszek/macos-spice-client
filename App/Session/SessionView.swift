@@ -340,8 +340,8 @@ struct SmartcardToolbarItem: View {
 
     var body: some View {
         Menu {
-            if smartcard.readers.isEmpty {
-                Text("No smartcard readers on this Mac")
+            if let note = smartcard.availabilityNote {
+                Text(note)
             }
             ForEach(smartcard.readers) { reader in
                 Toggle(isOn: Binding(get: { smartcard.sharedReader == reader.name },

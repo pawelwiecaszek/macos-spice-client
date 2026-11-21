@@ -410,8 +410,20 @@ public actor SpiceSession {
 
     /// Shares `card` with the guest's virtual reader.
     public func insertSmartcard(_ card: any SmartcardCard) async throws {
-        guard let smartcard else { throw SmartcardError.readerNotAccepted }
-        try await smartcard.insert(card)
+        _ = try await insertSmartcardWithLease(card)
+    }
+
+    /// Owns one insertion so delayed removal cannot affect a replacement card.
+    public func insertSmartcardWithLease(_ card: any SmartcardCard,
+                                         attachmentID: UUID = UUID()) async throws -> SmartcardAttachmentLease {
+        guard smartcardAllowed, state == .connected, let smartcard else { throw SmartcardError.readerNotAccepted }
+        try await smartcard.insert(card, attachmentID: attachmentID)
+        let lease = SmartcardAttachmentLease(id: attachmentID, channel: smartcard)
+        guard state == .connected, self.smartcard === smartcard else {
+            await lease.remove()
+            throw SmartcardError.readerNotAccepted
+        }
+        return lease
     }
 
     /// Takes the shared card back from the guest.

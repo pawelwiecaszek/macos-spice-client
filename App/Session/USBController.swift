@@ -80,6 +80,7 @@ final class USBController {
     private var detaching: [UUID: AttachedUSB.Kind] = [:]
     @ObservationIgnored private var rejectedWhilePending: Set<UUID> = []
     private var leases: [UUID: Attachment] = [:]
+    @ObservationIgnored private var detachWorkers: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var scopeReleases: [UUID: @MainActor () -> Void] = [:]
     @ObservationIgnored private var started = false
     private(set) var stopped = false
@@ -240,10 +241,10 @@ final class USBController {
         }
     }
 
-    private func reserve(_ kind: AttachedUSB.Kind) -> UUID? {
+    private func reserve(_ kind: AttachedUSB.Kind, id: UUID = UUID()) -> UUID? {
         guard isAllowed, !stopped, freeSlots > 0, !pending.values.contains(kind), !detaching.values.contains(kind),
+              pending[id] == nil, leases[id] == nil, detachWorkers[id] == nil,
               !attached.values.contains(where: { $0.kind == kind }) else { return nil }
-        let id = UUID()
         pending[id] = kind
         return id
     }
@@ -303,9 +304,19 @@ final class USBController {
 
     /// Attaches an emulated USB smartcard reader (see `SmartcardController`).
     func attachSmartcardReader(_ reader: EmulatedCCIDReader, name: String) async throws -> Int {
+        try await attachSmartcardReaderWithLease(reader, name: name).slot
+    }
+
+    func attachSmartcardReaderWithLease(_ reader: EmulatedCCIDReader, name: String,
+                                       attachmentID: UUID = UUID()) async throws -> Attachment {
         guard isAllowed, profile.enableSmartcard != false else { throw USBAttachError.blockedByConnectionFile }
-        guard let id = reserve(.smartcardReader) else { throw USBAttachError.slotBusy }
-        return try await launch(id: id, name: name, kind: .smartcardReader) { reader }.value
+        guard let id = reserve(.smartcardReader, id: attachmentID) else { throw USBAttachError.slotBusy }
+        let slot = try await launch(id: id, name: name, kind: .smartcardReader) { reader }.value
+        guard attached[slot]?.id == id else {
+            await detach(attachmentID: id)
+            throw CancellationError()
+        }
+        return Attachment(slot: slot, id: id, detach: { [weak self] in await self?.detach(attachmentID: id) })
     }
 
     // MARK: Reconnect (M8)
@@ -332,15 +343,30 @@ final class USBController {
     }
 
     func detach(slot: Int) {
-        guard let item = attached.removeValue(forKey: slot), let lease = leases[item.id] else { return }
+        guard let item = attached[slot] else { return }
+        _ = beginDetach(attachmentID: item.id)
+    }
+
+    func detach(attachmentID: UUID) async {
+        await beginDetach(attachmentID: attachmentID)?.value
+    }
+
+    private func beginDetach(attachmentID: UUID) -> Task<Void, Never>? {
+        if let existing = detachWorkers[attachmentID] { return existing }
+        guard let item = attached.values.first(where: { $0.id == attachmentID }),
+              let lease = leases[item.id] else { return nil }
+        attached.removeValue(forKey: item.slot)
         let release = scopeReleases.removeValue(forKey: item.id)
         detaching[item.id] = item.kind
-        Task { @MainActor in
+        let worker = Task { @MainActor in
             await lease.detach()
             leases.removeValue(forKey: item.id)
             detaching.removeValue(forKey: item.id)
+            detachWorkers.removeValue(forKey: item.id)
             release?()
         }
+        detachWorkers[item.id] = worker
+        return worker
     }
 
     private func autoShareNewDevices() {

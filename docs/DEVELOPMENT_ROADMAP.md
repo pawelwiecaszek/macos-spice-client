@@ -194,3 +194,9 @@ broader hardware coverage remains separate from wire tests. Smartcards follow.
 The user has no smartcard available. Verify lifecycle and no-reader/card states
 without claiming physical card acceptance; keep that hardware check explicitly
 unavailable rather than blocking unrelated progress.
+
+The [smartcard lifetime slice](SMARTCARD_LIFECYCLE.md) now has automated coverage
+for native/CCID ownership, pending acquisition, stale replies, cleanup and ordinary
+unavailable states (443 package tests, 185 hosted tests). The Release build verifies
+and review is complete. Physical card acceptance remains unavailable; a live
+no-reader menu check remains pending. C5 remains local and C4 remains installed.
