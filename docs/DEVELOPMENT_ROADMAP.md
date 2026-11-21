@@ -32,9 +32,27 @@ technical prerequisite for every later row. Implement one bounded slice at a tim
 | 7 | **Phase 7 / C5: sharing and device UX** | Reuse existing `USBController`, `SmartcardController`, `ClipboardController`, `FileTransferController`, `AudioController`; reuse the capability/availability model instead of per-feature guesses. | Test clipboard text/PNG, Mac→guest files, playback/mic, ISO, eligible USB and smartcard paths on available hardware, plus denied/absent/agent-loss/teardown cases. Record unsupported hardware explicitly; do not block unrelated work waiting for a card/device. |
 | 8 | **Phase 8B / C6: measured video efficiency** | `SpiceCodecs/VideoDecoder.swift:149` copies pixels; `App/Display/MetalRenderer.swift:121` uploads them. Reuse the settled timing/head/surface interfaces rather than redesigning them during optimization. | Establish same-VM/network CPU/GPU/memory/frame-pacing baseline first. Optimize a demonstrated hot path in one slice; prove correct images, retained clipping/cache/backpressure/memory limits and a measured gain without an A/V or monitor regression. |
 | 9 | **Optional 9/10 and separately scoped extensions** | Provisioning, notifications, persistent helper, migration, SASL, WebDAV and broader USB are distinct contracts/risks. Existing portal remains the fallback. | Select a concrete user need and verify deployed support/permissions before implementation. Each feature gets its own scope and acceptance gate; no universal full-parity rewrite. |
+| Final | **Apple Human Interface Guidelines audit** | After the agreed functional phases, review the finished macOS experience against Apple's current guidance. Audit existing UI before introducing new designs. | Record findings, fix applicable issues and verify navigation/window ownership, menus/shortcuts/focus, settings, dialogs/errors, accessibility, sizing/contrast and macOS visual conventions. Repeat functional checks affected by UI changes; document any justified exceptions and remaining gaps. |
 
 Short package source paths above are under `Packages/SpiceKit/Sources/`.
 Source anchors are explained in the audit.
+
+## Final macOS interface acceptance
+
+The user requested a final review against the
+[Apple Human Interface Guidelines](https://developer.apple.com/design/human-interface-guidelines/)
+after the functional phases are complete. This is a planned acceptance gate, not a
+claim of current compliance or an Apple certification. Optional extensions only
+enter this sequence if separately selected; the audit need not wait for every
+possible optional feature.
+
+Review the app's connections, portals, desktops, sessions, settings and Help as one
+experience. Check window/navigation clarity, standard menu placement and keyboard
+shortcuts, focus and keyboard-only operation, accessibility labels and VoiceOver,
+text sizing and contrast, appearance and reduced-motion preferences, dialog and
+error recovery, and consistent toolbar/control behavior. Use Apple's current
+macOS guidance at execution time, record applicable findings with evidence, and
+verify fixes without regressing SPICE input capture or active-session behavior.
 
 ## Hard dependencies versus delivery preferences
 
